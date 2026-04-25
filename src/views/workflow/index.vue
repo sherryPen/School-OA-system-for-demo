@@ -1,0 +1,405 @@
+<template>
+  <div class="page-container">
+    <div class="page-header"><h2>流程审批</h2></div>
+    <el-tabs v-model="activeTab">
+      <!-- 待办审批 -->
+      <el-tab-pane label="待办审批" name="pending">
+        <el-table :data="myPendingList" stripe @row-click="row => $router.push(`/workflow/detail/${row.id}`)" class="animate-fadeInUp">
+          <el-table-column type="index" label="#" width="50" />
+          <el-table-column prop="type" label="流程类型" width="120" />
+          <el-table-column prop="applicant" label="申请人" width="100" />
+          <el-table-column prop="reason" label="申请原因" min-width="200" show-overflow-tooltip />
+          <el-table-column prop="applyTime" label="申请时间" width="120" sortable />
+          <el-table-column prop="currentNode" label="当前节点" width="180">
+            <template #default="{ row }">
+              <el-tag type="warning" effect="plain">{{ row.currentNodeDisplay || '—' }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="160">
+            <template #default="{ row }">
+              <el-button type="success" size="small" @click.stop="doApprove(row, true)">通过</el-button>
+              <el-button type="danger" size="small" @click.stop="doApprove(row, false)">驳回</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        <div v-if="myPendingList.length === 0" class="empty-state">
+          <p>暂无待您审批的事项</p>
+        </div>
+      </el-tab-pane>
+
+      <!-- 我的申请 -->
+      <el-tab-pane label="我的申请" name="myApply">
+        <el-table :data="myApplyList" stripe @row-click="row => $router.push(`/workflow/detail/${row.id}`)" class="animate-fadeInUp">
+          <el-table-column type="index" label="#" width="50" />
+          <el-table-column prop="type" label="流程类型" width="120" />
+          <el-table-column prop="reason" label="申请原因" min-width="200" show-overflow-tooltip />
+          <el-table-column prop="applyTime" label="申请时间" width="120" />
+          <el-table-column prop="status" label="状态" width="100">
+            <template #default="{ row }">
+              <el-tag :type="statusType(row.status)" effect="plain">{{ row.status }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="currentNode" label="当前节点" width="180">
+            <template #default="{ row }"><span>{{ row.currentNodeDisplay || '—' }}</span></template>
+          </el-table-column>
+          <el-table-column label="进度" width="80">
+            <template #default="{ row }">
+              <el-progress :percentage="calcProgress(row)" :stroke-width="6" :show-text="false" style="width:60px;" :color="progressColor(row)" />
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-tab-pane>
+
+      <!-- 全部记录 -->
+      <el-tab-pane label="全部记录" name="all">
+        <el-table :data="allList" stripe @row-click="row => $router.push(`/workflow/detail/${row.id}`)" class="animate-fadeInUp">
+          <el-table-column type="index" label="#" width="50" />
+          <el-table-column prop="type" label="流程类型" width="120" />
+          <el-table-column prop="applicant" label="申请人" width="100" />
+          <el-table-column prop="reason" label="申请原因" min-width="200" show-overflow-tooltip />
+          <el-table-column prop="applyTime" label="申请时间" width="120" sortable />
+          <el-table-column prop="status" label="状态" width="100">
+            <template #default="{ row }">
+              <el-tag :type="statusType(row.status)" effect="plain">{{ row.status }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="进度" width="80">
+            <template #default="{ row }">
+              <el-progress :percentage="calcProgress(row)" :stroke-width="6" :show-text="false" style="width:60px;" :color="progressColor(row)" />
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-tab-pane>
+
+      <!-- 流程进度（新增） -->
+      <el-tab-pane label="流程进度" name="progress">
+        <div v-if="myApplyList.length > 0" style="display:flex; flex-direction:column; gap:20px;">
+          <div v-for="record in myApplyList" :key="record.id"
+               style="background:#fff; border-radius:12px; padding:20px; border:1px solid #e8ecf1;"
+               class="progress-card animate-fadeInUp">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+              <div>
+                <el-tag :type="statusType(record.status)" size="small" effect="plain">{{ record.status }}</el-tag>
+                <span style="font-weight:600; font-size:15px; margin-left:8px;">{{ record.type }} - {{ record.applicant }}</span>
+              </div>
+              <el-progress :percentage="calcProgress(record)" :style="{width:'140px'}" :color="progressColor(record)" />
+            </div>
+            <p style="font-size:13px; color:#64748b; margin-bottom:16px;">{{ record.reason }}</p>
+
+            <!-- 进度时间线 -->
+            <el-timeline>
+              <!-- 提交节点（始终存在） -->
+              <el-timeline-item timestamp="提交申请" placement="top" :type="'primary'" :hollow="false">
+                <div class="timeline-content">
+                  <strong>{{ record.type }}</strong>
+                  <div style="font-size:12px; color:#94a3b8;">{{ record.applyTime }} · {{ record.applicant }}（{{ getApplicantDept(record) }}）提交</div>
+                </div>
+              </el-timeline-item>
+
+              <!-- 各审批节点 -->
+              <el-timeline-item
+                v-for="(node, idx) in getTemplateNodes(record)"
+                :key="idx"
+                :timestamp="getNodeLabel(node)"
+                :placement="'top'"
+                :type="getNodeType(record, node)"
+                :hollow="isNodePending(record, node)"
+              >
+                <div class="timeline-content" :class="{ 'node-pending': isNodePending(record, node), 'node-done': !isNodePending(record, node) && isNodePassed(record, node), 'node-rejected': isNodeRejected(record, node) }">
+                  <strong>{{ node }}</strong>
+                  <div style="font-size:12px; color:#94a3b8;" v-if="getHandlerInfo(record, node)">
+                    {{ getHandlerInfo(record, node) }}
+                  </div>
+                  <div style="font-size:12px; color:#94a3b8;" v-if="isNodePending(record, node)">
+                    等待中...
+                  </div>
+                </div>
+              </el-timeline-item>
+
+              <!-- 最终结果节点 -->
+              <el-timestamp v-if="record.status !== '审批中'"
+                           :timestamp="record.status === '已通过' ? '✅ 已通过' : '❌ 已驳回'"
+                           :placement="'top'"
+                           :type="record.status === '已通过' ? 'success' : 'danger'"
+                           :hollow="false">
+                <div class="timeline-content">
+                  <strong>{{ record.status }}</strong>
+                  <div style="font-size:12px; color:#94a3b8;">
+                    {{ getLastHistory(record)?.time || '' }}
+                    · {{ getLastHistory(record)?.comment || '' }}
+                  </div>
+                </div>
+              </el-timestamp>
+            </el-timeline>
+          </div>
+        </div>
+        <div v-else class="empty-state">
+          <p>暂无申请记录，可点击下方按钮发起新的申请</p>
+        </div>
+      </el-tab-pane>
+    </el-tabs>
+
+    <div style="margin-top:18px;">
+      <el-button type="primary" @click="$router.push('/workflow/apply')"><el-icon><Plus /></el-icon>发起申请</el-button>
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { ref, computed } from 'vue'
+import { useUserStore } from '@/store/user'
+import { workflowRecords as _records, workflowTemplates, users } from '@/mock/data'
+import { ElMessage } from 'element-plus'
+
+const userStore = useUserStore()
+const activeTab = ref('pending')
+
+// 深拷贝使其可编辑
+const records = ref(_records.map(r => ({
+  ...r,
+  approveHistory: r.approveHistory ? r.approveHistory.map(h => ({ ...h })) : []
+})))
+
+// 部门映射：用于在审批节点显示部门+人名
+const deptMap = {
+  '李明': '校领导办公室',
+  '张建国': '校领导办公室',
+  '陈华': '教务处',
+  '黄磊': '财务处',
+  '林峰': '总务处',
+  '杨雪': '人事处',
+  '刘伟': '语文教研组',
+  '张丽': '数学教研组',
+  '王强': '英语教研组',
+  '赵敏': '物理教研组',
+  '孙涛': '化学教研组',
+  '周婷': '生物教研组',
+  '吴杰': '历史教研组',
+  '系统': '信息中心'
+}
+
+// ======== 待办列表（只显示需要当前用户审批的） ========
+const myPendingList = computed(() => {
+  const userId = userStore.currentUser?.id
+  const userName = userStore.currentUser?.name
+  const roleName = userStore.currentUser?.roleName
+
+  return records.value.filter(r => {
+    if (r.status !== '审批中') return false
+    // 根据当前节点的负责人过滤
+    // 系统管理员和学校领导可以看到所有待办
+    if (['系统管理员', '学校领导'].includes(roleName)) return true
+    // 行政人员：看自己部门的审批任务
+    if (roleName === '行政人员') {
+      const myDept = userStore.currentUser?.deptName
+      // 当前节点是否属于该用户的部门
+      const currentNode = r.currentNode || ''
+      if (currentNode.includes('教务处') && myDept === '教务处') return true
+      if (currentNode.includes('财务处') && myDept === '财务处') return true
+      if (currentNode.includes('总务处') && myDept === '总务处') return true
+      if (currentNode.includes('人事处') && myDept === '人事处') return true
+      if (currentNode.includes('校办') && myDept === '校领导办公室') return true
+      // 教务处可以审批调课申请
+      if (r.type === '调课申请' && myDept === '教务处') return true
+    }
+    // 教师：只能看到与自己相关的审批（如自己是直属领导的）
+    // 简化处理：检查审批历史中是否有自己的记录或是否是申请人的直属上级
+    const applicant = users.find(u => u.id === r.applicantId)
+    if (applicant && applicant.deptId === userStore.currentUser?.deptId && roleName === '教师') {
+      // 同教研组的教师可以看到彼此的请假等申请
+      if (r.type === '请假申请') return true
+    }
+    return false
+  })
+})
+
+const myApplyList = computed(() =>
+  records.value.filter(r => r.applicantId === userStore.currentUser?.id)
+)
+const allList = computed(() => records.value)
+
+// ======== 辅助函数 ========
+function statusType(status) {
+  if (status === '已通过') return 'success'
+  if (status === '已驳回') return 'danger'
+  return 'warning'
+}
+
+function calcProgress(record) {
+  const tpl = workflowTemplates.find(t => t.name === record.type)
+  if (!tpl) return record.status !== '审批中' ? 100 : 0
+  const totalNodes = tpl.nodes.length + 1 // +1 for submit
+  const doneCount = record.approveHistory ? record.approveHistory.length : 0
+  if (record.status === '已驳回') return Math.round((doneCount / totalNodes) * 90)
+  if (record.status === '已通过') return 100
+  return Math.round((doneCount / totalNodes) * 80) // 审批中进行到80%
+}
+
+function progressColor(record) {
+  if (record.status === '已通过') return '#11998e'
+  if (record.status === '已驳回') return '#e94560'
+  return '#4a6cf7'
+}
+
+// 获取模板中的所有节点
+function getTemplateNodes(record) {
+  const tpl = workflowTemplates.find(t => t.name === record.type)
+  return tpl ? tpl.nodes : []
+}
+
+// 节点标签显示：包含部门和负责人
+function getNodeLabel(node) {
+  // 从节点名称提取部门信息
+  const nodeDeptMap = {
+    '直属领导审批': '直属领导（部门负责人）',
+    '财务处审批': '财务处（财务审核）',
+    '部门领导审批': '部门领导（部门负责人）',
+    '校长审批': '校长室（校长审批）',
+    '校办审批': '校办（行政审核）',
+    '教务处审批': '教务处（教学管理）',
+    '总务处审批': '总务处（后勤保障）',
+    '人事处备案': '人事处（档案备案）',
+    '自动审批（冲突检测）': '系统自动检测'
+  }
+  return nodeDeptMap[node] || node
+}
+
+// 获取节点类型（颜色）
+function getNodeType(record, node) {
+  if (record.status === '已驳回') {
+    // 检查是否在这个节点被驳回
+    const lastH = record.approveHistory[record.approveHistory.length - 1]
+    if (lastH && lastH.node === node && lastH.result === '驳回') return 'danger'
+  }
+  // 检查这个节点是否已经通过
+  const passed = record.approveHistory?.find(h => h.node === node && h.result === '通过')
+  if (passed) return 'success'
+
+  // 检查是否是当前节点
+  if (record.currentNode === node || record.currentNode?.includes(node.replace('审批', '').replace('备案', ''))) return 'primary'
+
+  return 'info' // 未到达的节点
+}
+
+function isNodePending(record, node) {
+  if (record.status !== '审批中') return false
+  // 没有被处理过且不是当前节点之前的节点
+  const handled = record.approveHistory?.find(h => h.node === node)
+  if (handled) return false
+  // 判断是否到了这个节点
+  const tpl = workflowTemplates.find(t => t.name === record.type)
+  if (!tpl) return false
+  const nodeIdx = tpl.nodes.indexOf(node)
+  if (nodeIdx < 0) return false
+  // 前面的节点都已通过？
+  for (let i = 0; i < nodeIdx; i++) {
+    const prevPassed = record.approveHistory?.find(h => h.node === tpl.nodes[i] && h.result === '通过')
+    if (!prevPassed) return false // 前面有没通过的
+  }
+  // 是当前正在等待的节点
+  return record.currentNode?.includes(node) || nodeIdx === record.approveHistory?.length
+}
+
+function isNodePassed(record, node) {
+  return record.approveHistory?.find(h => h.node === node && h.result === '通过')
+}
+
+function isNodeRejected(record, node) {
+  return record.approveHistory?.find(h => h.node === node && h.result === '驳回')
+}
+
+function getHandlerInfo(record, node) {
+  const h = record.approveHistory?.find(item => item.node === node)
+  if (!h) return ''
+  const handlerDept = deptMap[h.handler] || ''
+  // 格式：部门名（姓名）
+  return `${h.time} · ${handlerDept}（${h.handler}）${h.comment ? '· ' + h.comment : ''}`
+}
+
+function getApplicantDept(record) {
+  const applicant = users.find(u => u.id === record.applicantId)
+  return applicant?.deptName || ''
+}
+
+function getLastHistory(record) {
+  if (!record.approveHistory || record.approveHistory.length === 0) return null
+  return record.approveHistory[record.approveHistory.length - 1]
+}
+
+// ======== 审批操作 ========
+function doApprove(row, approve) {
+  const result = approve ? '已通过' : '已驳回'
+  const userName = userStore.currentUser?.name || '管理员'
+  const userDept = userStore.currentUser?.deptName || ''
+
+  // 更新当前节点到下一个
+  const tpl = workflowTemplates.find(t => t.name === row.type)
+  if (tpl) {
+    const currentIdx = tpl.nodes.findIndex(n => row.currentNode?.includes(n) || n.includes(row.currentNode || ''))
+    if (approve && currentIdx >= 0 && currentIdx < tpl.nodes.length - 1) {
+      row.currentNode = tpl.nodes[currentIdx + 1]
+      row.currentNodeDisplay = `${tpl.nodes[currentIdx + 1]}（${userDept}）`
+    } else {
+      row.currentNode = ''
+      row.currentNodeDisplay = ''
+      row.status = result
+    }
+  } else {
+    row.status = result
+    row.currentNode = ''
+  }
+
+  const timeStr = new Date().toLocaleString('zh-CN', {
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit'
+  }).replace(/\//g, '-')
+
+  row.approveHistory.push({
+    node: row.currentNode || (approve ? '最终审批' : '审批节点'),
+    handler: userName,
+    time: timeStr,
+    result: approve ? '通过' : '驳回',
+    comment: approve ? '同意' : '不同意',
+    dept: userDept
+  })
+
+  // 同时更新currentNodeDisplay用于表格展示
+  if (row.status === '审批中' && row.currentNode) {
+    row.currentNodeDisplay = `${row.currentNode}（${userDept}）`
+  }
+
+  ElMessage.success(approve ? `已通过${row.type}` : `已驳回${row.type}`)
+}
+</script>
+
+<style scoped>
+.progress-card {
+  transition: all 0.3s ease;
+}
+.progress-card:hover {
+  box-shadow: 0 4px 16px rgba(0,0,0,0.06);
+}
+.timeline-content {
+  font-size:13px;
+  line-height:1.6;
+}
+.timeline-content strong {
+  color:#303133;
+}
+.node-pending {
+  opacity: 0.7;
+}
+.node-done strong {
+  color:#11998e;
+}
+.node-rejected strong {
+  color:#e94560;
+}
+.animate-fadeInUp {
+  animation: fadeInUp 0.4s ease both;
+}
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+</style>
