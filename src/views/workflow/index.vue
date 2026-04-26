@@ -42,6 +42,11 @@
           <el-table-column prop="currentNode" label="当前节点" width="180">
             <template #default="{ row }"><span>{{ row.currentNodeDisplay || '—' }}</span></template>
           </el-table-column>
+          <el-table-column label="操作" width="80">
+            <template #default="{ row }">
+              <el-button v-if="row.status === '审批中'" type="warning" size="small" @click.stop="doRecall(row)">撤回</el-button>
+            </template>
+          </el-table-column>
           <el-table-column label="进度" width="80">
             <template #default="{ row }">
               <el-progress :percentage="calcProgress(row)" :stroke-width="6" :show-text="false" style="width:60px;" :color="progressColor(row)" />
@@ -116,9 +121,9 @@
 
               <!-- 最终结果 -->
               <el-timeline-item v-if="record.status !== '审批中'"
-                           :timestamp="record.status === '已通过' ? '✅ 已通过' : '❌ 已驳回'"
+                           :timestamp="record.status === '已通过' ? '✅ 已通过' : record.status === '已撤回' ? '↩️ 已撤回' : '❌ 已驳回'"
                            :placement="'top'"
-                           :type="record.status === '已通过' ? 'success' : 'danger'"
+                           :type="record.status === '已通过' ? 'success' : record.status === '已撤回' ? 'info' : 'danger'"
                            :hollow="false">
                 <div class="timeline-content">
                   <strong>{{ record.status }}</strong>
@@ -199,6 +204,7 @@ const allList = computed(() =>
 function statusType(status) {
   if (status === '已通过') return 'success'
   if (status === '已驳回') return 'danger'
+  if (status === '已撤回') return 'info'
   return 'warning'
 }
 
@@ -215,6 +221,7 @@ function calcProgress(record) {
 function progressColor(record) {
   if (record.status === '已通过') return '#11998e'
   if (record.status === '已驳回') return '#e94560'
+  if (record.status === '已撤回') return '#909399'
   return '#4a6cf7'
 }
 
@@ -326,6 +333,16 @@ function getLastHistory(record) {
 function doApprove(row, approve) {
   oaStore.approveWorkflow(row.id, approve, userId.value, userName.value, deptName.value)
   ElMessage.success(approve ? `已通过${row.type}` : `已驳回${row.type}`)
+}
+
+// ======== 撤回操作（仅申请人可撤回审批中的流程） ========
+function doRecall(row) {
+  const ok = oaStore.recallWorkflow(row.id, userId.value, userName.value)
+  if (ok) {
+    ElMessage.success('已撤回该申请')
+  } else {
+    ElMessage.warning('无法撤回：只有申请人可撤回审批中的流程')
+  }
 }
 </script>
 

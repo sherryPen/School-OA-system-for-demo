@@ -285,6 +285,49 @@ export const useOaStore = defineStore('oa', () => {
     })
   }
 
+  /** 撤回审批（仅申请人本人可撤回，且仅限审批中的流程） */
+  function recallWorkflow(recordId, userId, userName) {
+    const row = workflowRecords.value.find(r => r.id === recordId)
+    if (!row) return false
+    if (row.status !== '审批中') return false
+    if (row.applicantId !== userId) return false
+
+    const timeStr = new Date().toLocaleString('zh-CN', {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit'
+    }).replace(/\//g, '-')
+
+    // 记录撤回历史
+    if (!row.approveHistory) row.approveHistory = []
+    row.approveHistory.push({
+      node: row.currentNode || '审批节点',
+      handler: userName,
+      time: timeStr,
+      result: '撤回',
+      comment: '申请人主动撤回',
+      dept: ''
+    })
+
+    row.status = '已撤回'
+    row.currentNode = ''
+    row.currentNodeDisplay = ''
+
+    // 通知当前节点审批人：流程已撤回
+    const nodeApprovers = row.nodeApprovers || {}
+    const currentApprovers = nodeApprovers[row.currentNode] || []
+    if (currentApprovers.length > 0 && currentApprovers[0] !== 0) {
+      addNotification({
+        type: 'approval', title: '流程已撤回',
+        desc: `${userName}撤回了${row.type}申请`,
+        path: `/workflow/detail/${row.id}`,
+        userIds: currentApprovers
+      })
+    }
+
+    persist()
+    return true
+  }
+
   // ================================================================
   //  通知公告
   // ================================================================
@@ -657,7 +700,7 @@ export const useOaStore = defineStore('oa', () => {
     // 持久化
     persist,
     // 流程审批
-    addWorkflowRecord, approveWorkflow, getMyWorkflowRecords, getMyPendingRecords,
+    addWorkflowRecord, approveWorkflow, recallWorkflow, getMyWorkflowRecords, getMyPendingRecords,
     getNodeApproverIds, buildNodeApprovers, nodeApproverMap, deptLeaderMap,
     // 通知公告
     addAnnouncement, getVisibleAnnouncements,
