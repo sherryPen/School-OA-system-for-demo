@@ -65,12 +65,12 @@ const currentNodes = computed(() => {
 })
 
 // 显示审批节点的负责人信息（具体人名）
+// 直属领导：教师→教务处主任陈华（不是教研组长自己！）
 function getNodeDesc(node) {
   const applicantDept = userStore.currentUser?.deptName
-  // 根据审批节点类型和申请人部门，映射到具体审批人
   const nodePersonMap = {
-    '直属领导审批': getDeptLeader(applicantDept),
-    '部门领导审批': getDeptLeader(applicantDept),
+    '直属领导审批': getDeptLeaderName(applicantDept),
+    '部门领导审批': getDeptLeaderName(applicantDept),
     '财务处审批': '黄磊（财务处）',
     '校长审批': '李明（校长）',
     '校办审批': '张建国（校办）',
@@ -82,23 +82,18 @@ function getNodeDesc(node) {
   return nodePersonMap[node] || ''
 }
 
-// 根据部门获取部门负责人
-function getDeptLeader(dept) {
+// 根据申请人部门获取直属领导名字
+function getDeptLeaderName(dept) {
   const leaderMap = {
-    '语文教研组': '刘伟（教研组长）',
-    '数学教研组': '张丽（教研组长）',
-    '英语教研组': '王强（教研组长）',
-    '物理教研组': '赵敏（教研组长）',
-    '化学教研组': '孙涛（教研组长）',
-    '生物教研组': '周婷（教研组长）',
-    '历史教研组': '吴杰（教研组长）',
-    '教务处': '陈华（教务处主任）',
-    '财务处': '黄磊（财务处主任）',
-    '总务处': '林峰（总务处主任）',
-    '人事处': '杨雪（人事处主任）',
-    '校领导办公室': '张建国（校办主任）'
+    '语文教研组': '陈华（教务处主任）', '数学教研组': '陈华（教务处主任）',
+    '英语教研组': '陈华（教务处主任）', '物理教研组': '陈华（教务处主任）',
+    '化学教研组': '陈华（教务处主任）', '生物教研组': '陈华（教务处主任）',
+    '历史教研组': '陈华（教务处主任）', '信息中心': '陈华（教务处主任）',
+    '教务处': '李明（校长）', '财务处': '李明（校长）',
+    '总务处': '李明（校长）', '人事处': '李明（校长）',
+    '校领导办公室': '李明（校长）'
   }
-  return leaderMap[dept] || '部门负责人'
+  return leaderMap[dept] || '上级领导'
 }
 
 function onTypeChange() {}
@@ -139,14 +134,16 @@ function doSubmit() {
   // 使用store添加，自动持久化+通知
   oaStore.addWorkflowRecord(newRecord)
 
-  // 通知相关审批人
+  // 精准通知第一个审批节点的审批人
   const firstNode = template?.nodes?.[0] || ''
-  if (firstNode.includes('教务处')) {
-    oaStore.addNotification({ type: 'approval', title: '待审批', desc: `${userStore.currentUser?.name}提交了${form.type}`, path: `/workflow/detail/${newId}`, userIds: ['dept:教务处'] })
-  } else if (firstNode.includes('校办') || firstNode.includes('校长')) {
-    oaStore.addNotification({ type: 'approval', title: '待审批', desc: `${userStore.currentUser?.name}提交了${form.type}`, path: `/workflow/detail/${newId}`, userIds: ['admin'] })
-  } else {
-    oaStore.addNotification({ type: 'approval', title: '待审批', desc: `${userStore.currentUser?.name}提交了${form.type}`, path: `/workflow/detail/${newId}`, userIds: null })
+  const firstApproverIds = newRecord.nodeApprovers?.[firstNode] || []
+  if (firstApproverIds.length > 0 && firstApproverIds[0] !== 0) {
+    oaStore.addNotification({
+      type: 'approval', title: '待审批',
+      desc: `${userStore.currentUser?.name}提交了${form.type}，等待您审批`,
+      path: `/workflow/detail/${newId}`,
+      userIds: firstApproverIds
+    })
   }
 
   ElMessage.success('申请已提交')

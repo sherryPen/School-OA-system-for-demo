@@ -73,22 +73,103 @@ export const useOaStore = defineStore('oa', () => {
   //  流程审批
   // ================================================================
 
+  /**
+   * 审批节点→具体审批人ID映射
+   * 规则：
+   *   - 直属领导审批：申请人所在教研组的上级（教务处主任陈华），非教研组长本人
+   *   - 部门领导审批：申请人部门的直属上级（行政→校领导李明，教研组→教务处主任）
+   *   - 固定部门节点：对应该部门负责人
+   */
+  const nodeApproverMap = {
+    '校长审批': [2],       // 李明
+    '校办审批': [1],       // 张建国
+    '教务处审批': [11],    // 陈华
+    '财务处审批': [13],    // 黄磊
+    '总务处审批': [14],    // 林峰
+    '人事处备案': [12],    // 杨雪
+    '自动审批（冲突检测）': [0]  // 系统自动
+  }
+
+  /** 教研组→直属领导（教务处主任陈华，不是教研组长自己） */
+  const deptLeaderMap = {
+    '语文教研组': [11],  // 教务处陈华（非教研组长刘伟）
+    '数学教研组': [11],
+    '英语教研组': [11],
+    '物理教研组': [11],
+    '化学教研组': [11],
+    '生物教研组': [11],
+    '历史教研组': [11],
+    '信息中心': [11],
+    '教务处': [2],       // 教务处的上级是校长李明
+    '财务处': [2],
+    '总务处': [2],
+    '人事处': [2],
+    '校领导办公室': [2],
+    '高一(1)班': [11],   // 学生请假→教务处
+    '高一(2)班': [11],
+    '高一(3)班': [11],
+    '高二(1)班': [11],
+    '高二(2)班': [11],
+    '高三(1)班': [11],
+    '高三(2)班': [11]
+  }
+
+  /** 计算某个审批节点针对某申请人的具体审批人ID列表 */
+  function getNodeApproverIds(nodeName, applicantId) {
+    // 固定部门节点
+    if (nodeApproverMap[nodeName]) return nodeApproverMap[nodeName]
+    // 直属领导/部门领导：根据申请人部门映射
+    if (nodeName === '直属领导审批' || nodeName === '部门领导审批') {
+      const applicant = users.find(u => u.id === applicantId)
+      const dept = applicant?.deptName || ''
+      return deptLeaderMap[dept] || [2] // 默认校长
+    }
+    return [] // 未知节点
+  }
+
+  /** 为审批记录计算所有节点的审批人信息 */
+  function buildNodeApprovers(templateId, applicantId) {
+    const tpl = workflowTemplates.find(t => t.id === templateId)
+    if (!tpl) return {}
+    const map = {}
+    tpl.nodes.forEach(node => {
+      map[node] = getNodeApproverIds(node, applicantId)
+    })
+    return map
+  }
+
   /** 新增审批记录 */
   function addWorkflowRecord(record) {
+    // 自动计算并注入 nodeApprovers
+    if (!record.nodeApprovers) {
+      record.nodeApprovers = buildNodeApprovers(record.templateId, record.applicantId)
+    }
     workflowRecords.value.push(record)
     persist()
   }
 
-  /** 审批操作 */
-  function approveWorkflow(recordId, approve, userName, userDept) {
+  /** 审批操作（增加权限校验） */
+  function approveWorkflow(recordId, approve, userId, userName, userDept) {
     const row = workflowRecords.value.find(r => r.id === recordId)
     if (!row) return
+    if (row.status !== '审批中') return
+
+    const currentNode = row.currentNode || ''
+    const nodeApprovers = row.nodeApprovers || {}
+
+    // ====== 权限校验：当前用户必须是该节点的审批人 ======
+    const approverIds = nodeApprovers[currentNode] || []
+    // 管理员/领导可以审批任何节点
+    const user = users.find(u => u.id === userId)
+    const isAdminOrLeader = user && ['系统管理员', '学校领导'].includes(user.roleName)
+    if (!isAdminOrLeader && approverIds.length > 0 && !approverIds.includes(userId)) {
+      return // 无权审批，静默拒绝
+    }
 
     const result = approve ? '已通过' : '已驳回'
     const tpl = workflowTemplates.find(t => t.name === row.type)
 
-    // 先记录当前节点的审批历史
-    const currentNode = row.currentNode || ''
+    // 记录当前节点的审批历史
     const timeStr = new Date().toLocaleString('zh-CN', {
       year: 'numeric', month: '2-digit', day: '2-digit',
       hour: '2-digit', minute: '2-digit'
@@ -104,25 +185,44 @@ export const useOaStore = defineStore('oa', () => {
       dept: userDept
     })
 
-    // 然后推进到下一节点
+    // 推进到下一节点
     if (tpl) {
       const currentIdx = tpl.nodes.findIndex(n =>
         currentNode.includes(n) || n.includes(currentNode)
       )
       if (approve && currentIdx >= 0 && currentIdx < tpl.nodes.length - 1) {
-        row.currentNode = tpl.nodes[currentIdx + 1]
-        row.currentNodeDisplay = `${tpl.nodes[currentIdx + 1]}`
+        const nextNode = tpl.nodes[currentIdx + 1]
+        row.currentNode = nextNode
+        row.currentNodeDisplay = nextNode
+        // 通知下一节点审批人
+        const nextApproverIds = nodeApprovers[nextNode] || []
+        if (nextApproverIds.length > 0 && nextApproverIds[0] !== 0) {
+          addNotification({
+            type: 'approval', title: '待审批',
+            desc: `${row.applicant}的${row.type}流转至${nextNode}，等待您审批`,
+            path: `/workflow/detail/${row.id}`,
+            userIds: nextApproverIds
+          })
+        }
       } else {
         row.currentNode = ''
         row.currentNodeDisplay = ''
         row.status = result
+        // 通知申请人最终结果
+        addNotification({
+          type: 'approval',
+          title: approve ? '审批通过' : '审批驳回',
+          desc: `您的${row.type}已${result}`,
+          path: `/workflow/detail/${row.id}`,
+          userIds: [row.applicantId]
+        })
       }
     } else {
       row.status = result
       row.currentNode = ''
     }
 
-    // 添加通知
+    // 驳回通知
     if (!approve) {
       addNotification({
         type: 'approval', title: '审批驳回',
@@ -142,41 +242,45 @@ export const useOaStore = defineStore('oa', () => {
       if (r.applicantId === userId) return true
       // 管理员/领导看全部
       if (['系统管理员', '学校领导'].includes(roleName)) return true
-      // 行政人员：看本部门相关的
+      // 该记录有我参与审批的节点（当前或历史）
+      const nodeApprovers = r.nodeApprovers || {}
+      const allApproverIds = Object.values(nodeApprovers).flat()
+      if (allApproverIds.includes(userId)) return true
+      // 兼容旧数据：行政人员按部门匹配
       if (roleName === '行政人员') {
         if (r.currentNode?.includes('教务处') && deptName === '教务处') return true
         if (r.currentNode?.includes('财务处') && deptName === '财务处') return true
         if (r.currentNode?.includes('总务处') && deptName === '总务处') return true
         if (r.currentNode?.includes('人事处') && deptName === '人事处') return true
         if (r.currentNode?.includes('校办') && deptName === '校领导办公室') return true
-        if (r.type === '调课申请' && deptName === '教务处') return true
-      }
-      // 教师：同教研组的请假
-      if (roleName === '教师' && r.type === '请假申请') {
-        const applicant = users.find(u => u.id === r.applicantId)
-        if (applicant && applicant.deptName === deptName) return true
       }
       return false
     })
   }
 
-  /** 获取待办审批 */
+  /** 获取待办审批（精确到具体审批人） */
   function getMyPendingRecords(userId, roleName, deptName) {
     return workflowRecords.value.filter(r => {
       if (r.status !== '审批中') return false
+      const currentNode = r.currentNode || ''
+      const nodeApprovers = r.nodeApprovers || {}
+
+      // 优先：检查当前节点的审批人列表是否包含我
+      const currentApproverIds = nodeApprovers[currentNode] || []
+      if (currentApproverIds.includes(userId)) return true
+
+      // 管理员/领导可以审批任何节点
       if (['系统管理员', '学校领导'].includes(roleName)) return true
+
+      // 兼容旧数据：行政人员按部门名匹配
       if (roleName === '行政人员') {
-        if (r.currentNode?.includes('教务处') && deptName === '教务处') return true
-        if (r.currentNode?.includes('财务处') && deptName === '财务处') return true
-        if (r.currentNode?.includes('总务处') && deptName === '总务处') return true
-        if (r.currentNode?.includes('人事处') && deptName === '人事处') return true
-        if (r.currentNode?.includes('校办') && deptName === '校领导办公室') return true
-        if (r.type === '调课申请' && deptName === '教务处') return true
+        if (currentNode.includes('教务处') && deptName === '教务处') return true
+        if (currentNode.includes('财务处') && deptName === '财务处') return true
+        if (currentNode.includes('总务处') && deptName === '总务处') return true
+        if (currentNode.includes('人事处') && deptName === '人事处') return true
+        if (currentNode.includes('校办') && deptName === '校领导办公室') return true
       }
-      if (roleName === '教师' && r.type === '请假申请') {
-        const applicant = users.find(u => u.id === r.applicantId)
-        if (applicant && applicant.deptName === deptName) return true
-      }
+
       return false
     })
   }
@@ -554,6 +658,7 @@ export const useOaStore = defineStore('oa', () => {
     persist,
     // 流程审批
     addWorkflowRecord, approveWorkflow, getMyWorkflowRecords, getMyPendingRecords,
+    getNodeApproverIds, buildNodeApprovers, nodeApproverMap, deptLeaderMap,
     // 通知公告
     addAnnouncement, getVisibleAnnouncements,
     isAnnouncementRead, markAnnouncementRead, markAllAnnouncementsRead,

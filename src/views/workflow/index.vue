@@ -224,12 +224,12 @@ function getTemplateNodes(record) {
 }
 
 function getNodeLabel(node) {
-  // 根据当前申请人部门动态计算具体审批人
+  // 使用当前登录人的部门（仅用于流程进度显示自己的申请）
   const applicantDept = userStore.currentUser?.deptName
   const nodeLabelMap = {
-    '直属领导审批': `直属领导（${getDeptLeader(applicantDept)}）`,
+    '直属领导审批': `直属领导（${getDeptLeaderName(applicantDept)}）`,
     '财务处审批': '财务处（黄磊）',
-    '部门领导审批': `部门领导（${getDeptLeader(applicantDept)}）`,
+    '部门领导审批': `部门领导（${getDeptLeaderName(applicantDept)}）`,
     '校长审批': '校长室（李明）',
     '校办审批': '校办（张建国）',
     '教务处审批': '教务处（陈华）',
@@ -240,14 +240,18 @@ function getNodeLabel(node) {
   return nodeLabelMap[node] || node
 }
 
-function getDeptLeader(dept) {
+// 直属领导名字：教师→教务处主任陈华（不是教研组长自己！）
+function getDeptLeaderName(dept) {
   const leaderMap = {
-    '语文教研组': '刘伟', '数学教研组': '张丽', '英语教研组': '王强',
-    '物理教研组': '赵敏', '化学教研组': '孙涛', '生物教研组': '周婷',
-    '历史教研组': '吴杰', '教务处': '陈华', '财务处': '黄磊',
-    '总务处': '林峰', '人事处': '杨雪', '校领导办公室': '张建国'
+    '语文教研组': '陈华（教务处主任）', '数学教研组': '陈华（教务处主任）',
+    '英语教研组': '陈华（教务处主任）', '物理教研组': '陈华（教务处主任）',
+    '化学教研组': '陈华（教务处主任）', '生物教研组': '陈华（教务处主任）',
+    '历史教研组': '陈华（教务处主任）', '信息中心': '陈华（教务处主任）',
+    '教务处': '李明（校长）', '财务处': '李明（校长）',
+    '总务处': '李明（校长）', '人事处': '李明（校长）',
+    '校领导办公室': '李明（校长）'
   }
-  return leaderMap[dept] || '部门负责人'
+  return leaderMap[dept] || '上级领导'
 }
 
 function getNodeType(record, node) {
@@ -295,13 +299,13 @@ function getApplicantDept(record) {
   return applicant?.deptName || ''
 }
 
-// 获取待审批节点的具体审批人
+// 获取待审批节点的具体审批人（用申请人部门）
 function getPendingApprover(node, record) {
   const applicant = users.find(u => u.id === record.applicantId)
   const applicantDept = applicant?.deptName || ''
   const nodePersonMap = {
-    '直属领导审批': getDeptLeader(applicantDept),
-    '部门领导审批': getDeptLeader(applicantDept),
+    '直属领导审批': getDeptLeaderName(applicantDept),
+    '部门领导审批': getDeptLeaderName(applicantDept),
     '财务处审批': '黄磊（财务处）',
     '校长审批': '李明（校长）',
     '校办审批': '张建国（校办）',
@@ -318,18 +322,9 @@ function getLastHistory(record) {
   return record.approveHistory[record.approveHistory.length - 1]
 }
 
-// ======== 审批操作（使用store统一处理） ========
+// ======== 审批操作（使用store统一处理，传入userId做权限校验） ========
 function doApprove(row, approve) {
-  oaStore.approveWorkflow(row.id, approve, userName.value, deptName.value)
-  // 添加通知
-  if (approve) {
-    oaStore.addNotification({
-      type: 'approval', title: '审批通过',
-      desc: `${userName.value}通过了${row.applicant}的${row.type}`,
-      path: `/workflow/detail/${row.id}`,
-      userIds: [row.applicantId]
-    })
-  }
+  oaStore.approveWorkflow(row.id, approve, userId.value, userName.value, deptName.value)
   ElMessage.success(approve ? `已通过${row.type}` : `已驳回${row.type}`)
 }
 </script>
