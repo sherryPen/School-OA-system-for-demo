@@ -30,6 +30,7 @@ yarn-error.log*
 # 缓存
 *.cache
 .temp/
+.npm-cache/
 
 # Vercel
 .vercel/

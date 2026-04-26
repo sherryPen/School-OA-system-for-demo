@@ -33,7 +33,7 @@
       </el-descriptions>
     </div>
 
-    <!-- 流程进度（核心新增） -->
+    <!-- 流程进度 -->
     <div class="detail-section animate-fadeInUp" style="animation-delay:0.1s;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
         <h3 class="section-title" style="margin-bottom:0;">流程进度</h3>
@@ -155,18 +155,20 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { ref, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useUserStore } from '@/store/user'
-import { workflowRecords as _records, workflowTemplates, users } from '@/mock/data'
+import { useOaStore } from '@/store/oa'
+import { workflowTemplates, users } from '@/mock/data'
 
 const route = useRoute()
 const userStore = useUserStore()
+const oaStore = useOaStore()
 
-const records = ref(_records.map(r => ({ ...r, approveHistory: r.approveHistory ? r.approveHistory.map(h => ({ ...h })) : [] })))
+// 从store获取实时数据
 const record = computed(() => {
   const id = Number(route.params.id)
-  return records.value.find(r => r.id === id)
+  return oaStore.workflowRecords.find(r => r.id === id)
 })
 
 // 部门映射
@@ -205,14 +207,14 @@ function progressColor(rec) {
   return '#4a6cf7'
 }
 
-function currentStepIndex() {
+const currentStepIndex = computed(() => {
   const r = record.value
   if (!r) return 0
   if (r.status === '已通过') return templateNodes.value.length + 1
-  if (r.status === '已驳回') return -1 // 特殊标记
+  if (r.status === '已驳回') return -1
   const done = r.approveHistory?.filter(h => h.result === '通过').length || 0
   return done + 1
-}
+})
 
 function statusType(status) {
   if (status === '已通过') return 'success'
@@ -286,9 +288,6 @@ function isNodePassed(rec, node) {
 }
 function isNodeRejected(rec, node) {
   return rec.approveHistory?.find(h => h.node === node && h.result === '驳回')
-}
-function getResult(rec, node) {
-  return rec.approveHistory?.find(h => h.node === node)?.result || ''
 }
 function getNodeResult(rec, node) {
   return rec.approveHistory?.find(h => h.node === node)?.result || ''

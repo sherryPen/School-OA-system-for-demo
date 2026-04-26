@@ -46,7 +46,7 @@
 
     <!-- 下方双栏 -->
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
-      <!-- 最新公告（角色过滤） -->
+      <!-- 最新公告（角色过滤 + 已读未读） -->
       <div class="page-container animate-fadeInUp" style="animation-delay:0.15s;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
           <h3 style="font-size:15px; font-weight:700; color:#1e293b;">📢 {{ myAnnouncementTitle }}</h3>
@@ -55,6 +55,7 @@
         <transition-group name="list-slide" tag="div">
           <div v-for="item in myAnnouncements" :key="item.id" class="announcement-item" @click="$router.push(`/announcement/detail/${item.id}`)">
             <div class="announcement-title">
+              <span class="read-dot" :class="isRead(item.id) ? 'read' : 'unread'"></span>
               <el-tag v-if="item.priority === '紧急'" type="danger" size="small" effect="dark">紧急</el-tag>
               <el-tag v-else-if="item.priority === '重要'" type="warning" size="small" effect="dark">重要</el-tag>
               <span>{{ item.title }}</span>
@@ -97,9 +98,11 @@
 <script setup>
 import { computed, ref, onMounted } from 'vue'
 import { useUserStore } from '@/store/user'
-import { announcements as _announcements, workflowRecords as _records, meetings, users } from '@/mock/data'
+import { useOaStore } from '@/store/oa'
+import { users } from '@/mock/data'
 
 const userStore = useUserStore()
+const oaStore = useOaStore()
 
 // ======== 基础数据 ========
 const today = new Date().toLocaleDateString('zh-CN', {
@@ -108,76 +111,47 @@ const today = new Date().toLocaleDateString('zh-CN', {
 const hour = new Date().getHours()
 const greeting = hour < 12 ? '上午好' : hour < 18 ? '下午好' : '晚上好'
 
-// 深拷贝可编辑数据
-const workflowRecords = ref(_records.map(r => ({ ...r, approveHistory: r.approveHistory ? [...r.approveHistory] : [], currentNodeDisplay: r.currentNode || '' })))
+const userId = computed(() => userStore.currentUser?.id)
+const role = computed(() => userStore.currentUser?.roleName)
+const deptName = computed(() => userStore.currentUser?.deptName)
 
-// ======== 本周会议数（动态计算） ========
+// ======== 公告已读状态 ========
+function isRead(annId) {
+  return oaStore.isAnnouncementRead(annId, userId.value)
+}
+
+// ======== 本周会议数（从store动态计算） ========
 const thisWeekMeetingCount = computed(() => {
+  const visibleMeetings = oaStore.getVisibleMeetings(role.value, userStore.currentUser?.name)
   const now = new Date()
   const weekStart = new Date(now)
   weekStart.setDate(now.getDate() - now.getDay() + 1)
   const weekEnd = new Date(weekStart)
   weekEnd.setDate(weekStart.getDate() + 6)
-
-  // 根据角色过滤：教师只看自己参加的
-  if (userStore.currentUser?.roleName === '教师') {
-    return meetings.filter(m => {
-      const meetingDate = new Date(m.startTime)
-      return meetingDate >= weekStart && meetingDate <= weekEnd &&
-             m.attendees?.includes(userStore.currentUser?.name)
-    }).length
-  }
-  return meetings.filter(m => {
+  return visibleMeetings.filter(m => {
     const meetingDate = new Date(m.startTime)
     return meetingDate >= weekStart && meetingDate <= weekEnd
   }).length
 })
 
-// ======== 统计卡片（完全动态化） ========
+// ======== 统计卡片（从store动态计算） ========
 const statCards = computed(() => {
-  const role = userStore.currentUser?.roleName
-  const userId = userStore.currentUser?.id
+  // 公告数：从store获取角色过滤后的，显示未读数
+  const visibleAnnouncements = oaStore.getVisibleAnnouncements(role.value, deptName.value)
+  const unreadAnnouncementCount = visibleAnnouncements.filter(a => !oaStore.isAnnouncementRead(a.id, userId.value)).length
 
-  // 公告数：管理员看全部，其他看与自己相关的
-  let announcementCount
-  if (['系统管理员', '学校领导'].includes(role)) {
-    announcementCount = _announcements.length
-  } else if (userStore.currentUser?.deptId) {
-    // 过滤scope包含自己角色的公告
-    announcementCount = _announcements.filter(a => {
-      if (a.scope === '全校') return true
-      if (a.scope?.includes(role)) return true
-      if (a.scope?.includes('全校学生') && role === '学生') return true
-      if (a.scope?.includes('教职工') && ['教师','行政人员'].includes(role)) return true
-      if (a.scope?.includes(userStore.currentUser.deptName)) return true
-      return false
-    }).length
-  } else { announcementCount = _announcements.length }
+  // 待办审批：从store获取
+  const myPending = oaStore.getMyPendingRecords(userId.value, role.value, deptName.value)
 
-  // 待办审批：只算自己的待办
-  const myPending = workflowRecords.value.filter(r => {
-    if (r.status !== '审批中') return false
-    if (['系统管理员', '学校领导'].includes(role)) return true
-    // 教务处看教务相关审批
-    if (role === '行政人员' && userStore.currentUser?.deptName === '教务处') {
-      return r.type === '调课申请' || r.type === '采购申请'
-    }
-    // 教师：看自己的申请进度
-    if (role === '教师') {
-      return r.applicantId === userId || r.type === '调课申请'
-    }
-    return false
-  })
-
-  // 基础卡片配置
   const baseCards = []
 
   // 所有角色都有通知和待办
   baseCards.push(
-    { label: '相关公告', value: announcementCount, icon: 'Bell', color: 'blue', path: '/announcement' },
-    { label: role === '学生' ? '我的申请' : '待办审批', value: role === '学生'
-      ? workflowRecords.value.filter(r => r.applicantId === userId).length
-      : myPending.length,
+    { label: '未读公告', value: unreadAnnouncementCount, icon: 'Bell', color: 'blue', path: '/announcement' },
+    { label: role.value === '学生' ? '我的申请' : '待办审批',
+      value: role.value === '学生'
+        ? oaStore.getMyWorkflowRecords(userId.value, role.value, deptName.value).length
+        : myPending.length,
       icon: 'DocumentChecked', color: 'orange', path: '/workflow' }
   )
 
@@ -191,14 +165,24 @@ const statCards = computed(() => {
   })
 
   // 第四张卡片根据角色不同
-  if (role === '教师') {
-    baseCards.push({ label: '待录入成绩', value: 8, icon: 'Edit', color: 'purple', path: '/grade' })
-  } else if (role === '学生') {
-    baseCards.push({ label: '已发布成绩', value: 5, icon: 'DataAnalysis', color: 'purple', path: '/grade' })
-  } else if (['系统管理员', '学校领导'].includes(role)) {
+  if (role.value === '教师') {
+    // 待录入成绩：统计未发布的成绩数
+    const pendingGrades = oaStore.getVisibleGrades(userStore.currentUser)
+      .filter(g => g.status === '待发布').length
+    baseCards.push({ label: '待录入成绩', value: pendingGrades || 0, icon: 'Edit', color: 'purple', path: '/grade' })
+  } else if (role.value === '学生') {
+    // 已发布成绩
+    const publishedGrades = oaStore.getVisibleGrades(userStore.currentUser).length
+    baseCards.push({ label: '已发布成绩', value: publishedGrades, icon: 'DataAnalysis', color: 'purple', path: '/grade' })
+  } else if (['系统管理员', '学校领导'].includes(role.value)) {
     baseCards.push({ label: '活跃用户', value: users.filter(u => u.status === '启用').length, icon: 'UserFilled', color: 'teal', path: '/user' })
   } else {
-    baseCards.push({ label: '本学期课程', value: 15, icon: 'Reading', color: 'purple', path: '/course' })
+    // 本学期课程数：从store获取已发布课表
+    const currentSemester = oaStore.semestersList.find(s => s.status === '进行中')
+    const courseCount = currentSemester
+      ? new Set(oaStore.schedules.filter(s => s.semesterId === currentSemester.id && s.status === '已发布').map(s => s.courseName)).size
+      : 0
+    baseCards.push({ label: '本学期课程', value: courseCount, icon: 'Reading', color: 'purple', path: '/course' })
   }
 
   return baseCards
@@ -206,94 +190,59 @@ const statCards = computed(() => {
 
 // ======== 快捷入口 ========
 const quickEntries = computed(() => {
-  const role = userStore.currentUser?.roleName
   const entries = [
     { label: '查看公告', icon: 'Bell', bg: 'linear-gradient(135deg, #4a6cf7, #6366f1)', path: '/announcement' },
     { label: '发起申请', icon: 'EditPen', bg: 'linear-gradient(135deg, #e94560, #c23616)', path: '/workflow/apply' },
     { label: '会议预约', icon: 'Calendar', bg: 'linear-gradient(135deg, #11998e, #38ef7d)', path: '/meeting' }
   ]
-  if (role === '教师')
+  if (role.value === '教师')
     entries.push({ label: '录入成绩', icon: 'Edit', bg: 'linear-gradient(135deg, #f2994a, #f2c94c)', path: '/grade' })
-  else if (role === '学生')
+  else if (role.value === '学生')
     entries.push({ label: '查询成绩', icon: 'Search', bg: 'linear-gradient(135deg, #f2994a, #f2c94c)', path: '/grade' })
   else
     entries.push({ label: '用户管理', icon: 'UserFilled', bg: 'linear-gradient(135deg, #f2994a, #f2c94c)', path: '/user' })
   return entries
 })
 
-// ======== 我的公告（权限过滤） ========
+// ======== 我的公告（从store获取，权限过滤） ========
 const myAnnouncementTitle = computed(() => {
-  const role = userStore.currentUser?.roleName
-  if (['系统管理员', '学校领导'].includes(role)) return '最新公告（全部）'
-  return `最新公告`
+  if (['系统管理员', '学校领导'].includes(role.value)) return '最新公告（全部）'
+  return '最新公告'
 })
 
 const myAnnouncements = computed(() => {
-  const role = userStore.currentUser?.roleName
-  const scope = userStore.currentUser?.deptName
-
-  let filtered = _announcements
-
-  if (!['系统管理员', '学校领导'].includes(role)) {
-    filtered = _announcements.filter(a => {
-      if (a.scope === '全校') return true
-      if (a.scope?.includes(role)) return true
-      if (a.scope?.includes(scope)) return true
-      if (a.scope?.includes('高一师生') && scope?.startsWith('高')) return true
-      if (a.scope?.includes('高二师生') && scope?.includes('高二')) return true
-      if (a.scope?.includes('高三师生') && scope?.includes('高三')) return true
-      if (a.scope?.includes('全校学生') && role === '学生') return true
-      if (a.scope?.includes('全校教职工') && role !== '学生') return true
-      return false
-    })
-  }
-
+  const filtered = oaStore.getVisibleAnnouncements(role.value, deptName.value)
   return [...filtered].sort((a, b) => b.publishTime.localeCompare(a.publishTime)).slice(0, 5)
 })
 
-// ======== 我的待办（权限过滤） ========
+// ======== 我的待办（从store获取，权限过滤） ========
 const myPendingTitle = computed(() => {
-  const role = userStore.currentUser?.roleName
-  if (role === '学生') return '我的申请'
+  if (role.value === '学生') return '我的申请'
   return '待办审批'
 })
 
 const myPendingItems = computed(() => {
-  const role = userStore.currentUser?.roleName
-  const userId = userStore.currentUser?.id
-  const deptName = userStore.currentUser?.deptName
-
-  if (role === '学生') {
-    // 学生只看到自己的申请
-    return workflowRecords.value
-      .filter(r => r.applicantId === userId)
+  if (role.value === '学生') {
+    return oaStore.getMyWorkflowRecords(userId.value, role.value, deptName.value)
       .sort((a, b) => b.applyTime.localeCompare(a.applyTime))
       .slice(0, 5)
-      .map(r => ({
-        ...r,
-        currentNodeDisplay: r.currentNode ? `${r.currentNode}（审批中）` : ''
-      }))
+      .map(r => ({ ...r, currentNodeDisplay: r.currentNode ? `${r.currentNode}（审批中）` : '' }))
   }
 
-  // 管理员/领导：所有待办
-  if (['系统管理员', 'school领导'].includes(role)) {
-    return workflowRecords.value
-      .filter(r => r.status === '审批中')
+  if (['系统管理员', '学校领导'].includes(role.value)) {
+    return oaStore.getMyPendingRecords(userId.value, role.value, deptName.value)
       .slice(0, 5)
       .map(r => ({ ...r, currentNodeDisplay: `${r.currentNode || '等待处理'}（${r.type}）` }))
   }
 
-  // 行政人员：部门相关的待办
-  if (role === '行政人员') {
-    return workflowRecords.value
-      .filter(r => r.status === '审批中')
+  if (role.value === '行政人员') {
+    return oaStore.getMyPendingRecords(userId.value, role.value, deptName.value)
       .slice(0, 5)
-      .map(r => ({ ...r, currentNodeDisplay: `${r.currentNode || ''}` }))
+      .map(r => ({ ...r, currentNodeDisplay: r.currentNode || '' }))
   }
 
-  // 教师：自己的申请 + 需要关注的
-  return workflowRecords.value
-    .filter(r => r.applicantId === userId || r.status === '审批中')
+  // 教师：自己的申请 + 需要审批的
+  return oaStore.getMyWorkflowRecords(userId.value, role.value, deptName.value)
     .sort((a, b) => (b.status === '审批中' ? 1 : 0) - (a.status === '审批中' ? 1 : 0))
     .slice(0, 5)
 })
@@ -404,6 +353,18 @@ export default {
   text-align:center; padding:24px; color:#c0c4cc; font-size:13px;
 }
 .mini-empty span { font-size:24px; margin-right:6px; }
+
+/* 已读未读圆点 */
+.read-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  flex-shrink: 0;
+}
+.read-dot.unread { background: #f56c6c; }
+.read-dot.read { background: #67c23a; }
 
 /* 动画 */
 .animate-fadeInUp {

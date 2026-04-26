@@ -23,10 +23,24 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { announcements } from '@/mock/data'
+import { useUserStore } from '@/store/user'
+import { useOaStore } from '@/store/oa'
 
 const route = useRoute()
-const detail = computed(() => announcements.find(a => a.id === Number(route.params.id)))
+const userStore = useUserStore()
+const oaStore = useOaStore()
+
+const detail = computed(() => {
+  const id = Number(route.params.id)
+  return oaStore.announcements.find(a => a.id === id)
+})
+
+// 进入详情页自动标记已读
+watch(() => route.params.id, (newId) => {
+  if (newId) {
+    oaStore.markAnnouncementRead(Number(newId), userStore.currentUser?.id)
+  }
+}, { immediate: true })
 </script>

@@ -17,7 +17,7 @@
         <div v-if="currentScheduleStatus === '草稿'" style="margin-bottom:14px; display:flex; gap:10px; align-items:center;">
           <el-tag type="warning" effect="dark">当前课表状态：{{ currentScheduleStatus }}</el-tag>
           <span style="font-size:13px; color:#94a3b8;">课表尚未发布，学生不可见</span>
-          <el-button v-if="canManageSchedule" type="success" size="small" @click="publishSchedule">发布课表</el-button>
+          <el-button v-if="canManageSchedule" type="success" size="small" @click="doPublishSchedule">发布课表</el-button>
         </div>
         <div v-if="currentScheduleStatus === '已发布'" style="margin-bottom:14px;">
           <el-tag type="success" effect="dark">当前课表状态：已发布</el-tag>
@@ -62,7 +62,7 @@
         <div style="margin-bottom:16px;" v-if="userStore.hasRole(['系统管理员', '学校领导', '行政人员'])">
           <el-button type="primary" size="default" @click="showSemesterDialog()"><el-icon><Plus /></el-icon>新增学期</el-button>
         </div>
-        <el-table :data="semestersList" stripe class="animate-fadeInUp">
+        <el-table :data="oaStore.semestersList" stripe class="animate-fadeInUp">
           <el-table-column type="index" label="#" width="50" />
           <el-table-column prop="name" label="学期名称" min-width="250" />
           <el-table-column prop="startDate" label="开始时间" width="120" />
@@ -72,12 +72,12 @@
               <el-tag :type="semesterStatusType(row.status)" size="small" effect="plain">{{ row.status }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="220" v-if="userStore.hasRole(['系统管理员', '学校领导'])">
+          <el-table-column label="操作" width="220" v-if="userStore.hasRole(['系统管理员', '学校领导', '行政人员'])">
             <template #default="{ row }">
-              <el-button v-if="row.status !== '进行中'" type="primary" link size="small" @click="activateSemester(row)">激活</el-button>
-              <el-button v-if="row.status === '进行中'" type="warning" link size="small" @click="endSemester(row)">结束学期</el-button>
+              <el-button v-if="row.status !== '进行中'" type="primary" link size="small" @click="doActivateSemester(row)">激活</el-button>
+              <el-button v-if="row.status === '进行中'" type="warning" link size="small" @click="doEndSemester(row)">结束学期</el-button>
               <el-button type="primary" link size="small" @click="showSemesterDialog(row)">编辑</el-button>
-              <el-popconfirm title="确定删除此学期？" @confirm="deleteSemester(row.id)">
+              <el-popconfirm title="确定删除此学期？" @confirm="doDeleteSemester(row.id)">
                 <template #reference>
                   <el-button type="danger" link size="small">删除</el-button>
                 </template>
@@ -94,7 +94,7 @@
             <el-option v-for="c in classList" :key="c.id" :label="c.name" :value="c.id" />
           </el-select>
           <el-select v-model="editForm.semesterId" placeholder="选择学期" style="width:240px;">
-            <el-option v-for="s in semestersList" :key="s.id" :label="s.name" :value="s.id" />
+            <el-option v-for="s in oaStore.semestersList" :key="s.id" :label="s.name" :value="s.id" />
           </el-select>
           <el-button type="primary" @click="loadClassSchedules">加载该班课表</el-button>
         </div>
@@ -161,6 +161,13 @@
         <el-form-item label="结束日期" required>
           <el-date-picker v-model="semesterForm.endDate" type="date" placeholder="结束日期" value-format="YYYY-MM-DD" style="width:100%;" />
         </el-form-item>
+        <el-form-item label="状态" v-if="editingSemester">
+          <el-select v-model="semesterForm.status" style="width:100%;">
+            <el-option label="未开始" value="未开始" />
+            <el-option label="进行中" value="进行中" />
+            <el-option label="已结束" value="已结束" />
+          </el-select>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="semesterDialogVisible = false">取消</el-button>
@@ -173,19 +180,17 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useUserStore } from '@/store/user'
-import { schedules as _schedules, courses, departments, semesters as _semesters, users } from '@/mock/data'
+import { useOaStore } from '@/store/oa'
+import { courses, departments, users } from '@/mock/data'
 import { ElMessage } from 'element-plus'
 
 const userStore = useUserStore()
+const oaStore = useOaStore()
 const activeTab = ref('timetable')
 const days = ['周一', '周二', '周三', '周四', '周五']
 const periods = [1, 2, 3, 4, 5, 6]
 const selectedClass = ref(7)
 const selectedSemester = ref(2)
-
-// 可编辑数据（深拷贝）
-const schedules = ref(_schedules.map(s => ({ ...s })))
-const semestersList = ref(_semesters.map(s => ({ ...s })))
 
 // 教务处可管理课表
 const canManageSchedule = computed(() => {
@@ -193,7 +198,7 @@ const canManageSchedule = computed(() => {
 })
 
 const classList = computed(() => departments.filter(d => d.type === '班级'))
-const activeSemesters = computed(() => semestersList.value.filter(s => s.status === '进行中'))
+const activeSemesters = computed(() => oaStore.semestersList)
 
 const currentClassName = computed(() => {
   const cls = classList.value.find(c => c.id === editForm.classId)
@@ -201,12 +206,12 @@ const currentClassName = computed(() => {
 })
 
 const classSchedules = computed(() =>
-  schedules.value.filter(s => s.classId === selectedClass.value && s.semesterId === selectedSemester.value)
+  oaStore.schedules.filter(s => s.classId === selectedClass.value && s.semesterId === selectedSemester.value)
 )
 
-// 课表状态：是否已发布
+// 课表状态
 function getClassScheduleStatus(classId, semesterId) {
-  const sch = schedules.value.find(s => s.classId === classId && s.semesterId === semesterId)
+  const sch = oaStore.schedules.find(s => s.classId === classId && s.semesterId === semesterId)
   return sch?.status || '未设置'
 }
 const currentScheduleStatus = computed(() => getClassScheduleStatus(selectedClass.value, selectedSemester.value))
@@ -223,7 +228,7 @@ function getSchedule(day, period) {
 // ======== 学期管理 ========
 const semesterDialogVisible = ref(false)
 const editingSemester = ref(null)
-const semesterForm = reactive({ name: '', startDate: '', endDate: '' })
+const semesterForm = reactive({ name: '', startDate: '', endDate: '', status: '' })
 
 function showSemesterDialog(row) {
   editingSemester.value = row || null
@@ -231,10 +236,12 @@ function showSemesterDialog(row) {
     semesterForm.name = row.name
     semesterForm.startDate = row.startDate
     semesterForm.endDate = row.endDate
+    semesterForm.status = row.status
   } else {
     semesterForm.name = ''
     semesterForm.startDate = ''
     semesterForm.endDate = ''
+    semesterForm.status = '未开始'
   }
   semesterDialogVisible.value = true
 }
@@ -245,15 +252,16 @@ function saveSemester() {
     return
   }
   if (editingSemester.value) {
-    Object.assign(editingSemester.value, {
+    oaStore.updateSemester(editingSemester.value.id, {
       name: semesterForm.name,
       startDate: semesterForm.startDate,
-      endDate: semesterForm.endDate
+      endDate: semesterForm.endDate,
+      status: semesterForm.status
     })
     ElMessage.success('学期信息已更新')
   } else {
-    const newId = Math.max(...semestersList.value.map(s => s.id), 0) + 1
-    semestersList.value.push({
+    const newId = Math.max(...oaStore.semestersList.map(s => s.id), 0) + 1
+    oaStore.addSemester({
       id: newId,
       name: semesterForm.name,
       startDate: semesterForm.startDate,
@@ -265,26 +273,19 @@ function saveSemester() {
   semesterDialogVisible.value = false
 }
 
-function activateSemester(row) {
-  // 先将所有其他学期设为非进行中
-  semestersList.value.forEach(s => {
-    if (s.status === '进行中') s.status = '已结束'
-  })
-  row.status = '进行中'
+function doActivateSemester(row) {
+  oaStore.activateSemester(row.id)
   ElMessage.success(`已激活学期：${row.name}`)
 }
 
-function endSemester(row) {
-  row.status = '已结束'
+function doEndSemester(row) {
+  oaStore.endSemester(row.id)
   ElMessage.success(`学期 ${row.name} 已结束`)
 }
 
-function deleteSemester(id) {
-  const idx = semestersList.value.findIndex(s => s.id === id)
-  if (idx > -1) {
-    semestersList.value.splice(idx, 1)
-    ElMessage.success('学期已删除')
-  }
+function doDeleteSemester(id) {
+  oaStore.deleteSemester(id)
+  ElMessage.success('学期已删除')
 }
 
 function semesterStatusType(status) {
@@ -296,10 +297,8 @@ function semesterStatusType(status) {
 const editForm = reactive({ classId: null, semesterId: 2 })
 const editMatrix = ref({})
 
-// 将课程按教研组分组，并关联教师
 const courseGrouped = computed(() => {
   const groups = []
-  // 获取所有教师
   const teachers = users.filter(u => u.roleName === '教师')
 
   courses.forEach(course => {
@@ -309,7 +308,6 @@ const courseGrouped = computed(() => {
       group = { label: groupName, options: [] }
       groups.push(group)
     }
-    // 找出教这门课的教师
     const courseTeachers = teachers.filter(t => t.deptName === course.deptName)
     courseTeachers.forEach(t => {
       group.options.push({
@@ -321,7 +319,6 @@ const courseGrouped = computed(() => {
         courseId: course.id
       })
     })
-    // 如果没有对应教师也加入
     if (courseTeachers.length === 0) {
       group.options.push({
         value: `${course.id}-0`,
@@ -342,8 +339,7 @@ function loadClassSchedules() {
     return
   }
   editMatrix.value = {}
-  // 加载已有课表到矩阵
-  const existing = schedules.value.filter(
+  const existing = oaStore.schedules.filter(
     s => s.classId === editForm.classId && s.semesterId === editForm.semesterId
   )
   existing.forEach(s => {
@@ -353,9 +349,7 @@ function loadClassSchedules() {
   ElMessage.info(`已加载 ${existing.length} 条课表记录`)
 }
 
-function onScheduleChange(day, period, val) {
-  // 实时更新预览
-}
+function onScheduleChange(day, period, val) {}
 
 function clearEditMatrix() {
   editMatrix.value = {}
@@ -367,14 +361,8 @@ function saveSchedules() {
     return
   }
 
-  // 先清除该班该学期的旧记录
-  const beforeLen = schedules.value.length
-  schedules.value = schedules.value.filter(
-    s => !(s.classId === editForm.classId && s.semesterId === editForm.semesterId)
-  )
-
-  // 从矩阵中提取新记录
-  let newCount = 0
+  // 构建新记录
+  const newRecords = []
   Object.entries(editMatrix.value).forEach(([key, val]) => {
     if (!val) return
     const [day, period] = key.split('-').map(Number)
@@ -385,8 +373,7 @@ function saveSchedules() {
     const teacherInfo = users.find(u => u.id === teacherId)
     const classInfo = classList.value.find(c => c.id === editForm.classId)
 
-    newCount++
-    schedules.value.push({
+    newRecords.push({
       id: Date.now() + Math.random(),
       courseName: courseInfo?.name || '',
       courseId,
@@ -395,43 +382,44 @@ function saveSchedules() {
       className: classInfo?.name || '',
       classId: editForm.classId,
       day,
-      period: `${period}-${period}`, // 单节课
+      period: `${period}-${period}`,
       room: `${editForm.classId}教室`,
       semesterId: editForm.semesterId,
       status: '草稿'
     })
   })
 
-  ElMessage.success(`课表已保存！新增 ${newCount} 条，原 ${beforeLen - schedules.value.length + newCount} 条`)
+  // 用store方法保存
+  oaStore.saveScheduleRecords(editForm.classId, editForm.semesterId, newRecords)
+
+  ElMessage.success(`课表已保存！新增 ${newRecords.length} 条`)
   selectedClass.value = editForm.classId
   selectedSemester.value = editForm.semesterId
   activeTab.value = 'timetable'
 }
 
-function publishSchedule() {
-  const targetSch = schedules.value.filter(
-    s => s.classId === selectedClass.value && s.semesterId === selectedSemester.value
-  )
-  if (targetSch.length === 0) {
-    ElMessage.warning('暂无课表数据可发布')
-    return
-  }
-  targetSch.forEach(s => { s.status = '已发布' })
-  ElMessage.success(`已发布 ${currentClassName.value} 的课表，共${targetSch.length}条课程安排`)
+function doPublishSchedule() {
+  oaStore.publishSchedule(selectedClass.value, selectedSemester.value)
+  const cls = classList.value.find(c => c.id === selectedClass.value)
+  ElMessage.success(`已发布 ${cls?.name || ''} 的课表`)
 }
 
 function editCell(day, period) {
-  // 点击表格单元格时切换到编辑模式
   activeTab.value = 'scheduleEdit'
   editForm.classId = selectedClass.value
   editForm.semesterId = selectedSemester.value
   loadClassSchedules()
 }
 
+function onClassChange() {}
+
 function handleTabChange(tab) {}
 
 onMounted(() => {
-  selectedSemester.value = activeSemesters.value[0]?.id || semestersList.value[0]?.id
+  // 优先选择"进行中"的学期，否则选第一个
+  const active = oaStore.semestersList.find(s => s.status === '进行中')
+  selectedSemester.value = active?.id || oaStore.semestersList[0]?.id || 2
+  editForm.semesterId = selectedSemester.value
 })
 </script>
 

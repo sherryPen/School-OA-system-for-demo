@@ -68,7 +68,7 @@
           <el-table-column prop="className" label="班级" width="110" />
           <el-table-column label="成绩" width="130">
             <template #default="{ row }">
-              <el-input-number v-model="row.score" :min="0" :max="100" size="small" controls-position="right" />
+              <el-input-number v-model="row.score" :min="0" :max="100" size="small" controls-position="right" @change="onScoreChange(row)" />
             </template>
           </el-table-column>
           <el-table-column prop="status" label="状态" width="90">
@@ -84,18 +84,30 @@
 
       <!-- 成绩统计 -->
       <el-tab-pane label="成绩统计" name="stats">
+        <div class="search-bar">
+          <el-select v-model="statsForm.semester" placeholder="学期" style="width:220px;">
+            <el-option v-for="s in semesters" :key="s.id" :label="s.name" :value="s.name" />
+          </el-select>
+          <el-select v-model="statsForm.examType" placeholder="考试类型" style="width:140px;">
+            <el-option label="期中考试" value="期中考试" /><el-option label="期末考试" value="期末考试" />
+          </el-select>
+        </div>
         <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(240px, 1fr)); gap:14px;">
-          <div v-for="stat in gradeStats" :key="stat.courseName"
+          <div v-for="stat in gradeStats" :key="stat.label"
                style="padding:18px; background:#f8fafc; border-radius:12px; border:1px solid #e8ecf1;"
                class="animate-fadeInUp stat-card-hover">
-            <h4 style="font-size:15px; font-weight:700; margin-bottom:12px; color:#1e293b;">{{ stat.courseName }}</h4>
+            <h4 style="font-size:15px; font-weight:700; margin-bottom:12px; color:#1e293b;">{{ stat.label }}</h4>
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px; font-size:13px; color:#475569;">
               <div>平均分：<b style="color:#4a6cf7;">{{ stat.avg }}</b></div>
               <div>最高分：<b style="color:#11998e;">{{ stat.max }}</b></div>
               <div>最低分：<b style="color:#e94560;">{{ stat.min }}</b></div>
               <div>及格率：<b style="color:#f2994a;">{{ stat.passRate }}%</b></div>
+              <div>人数：<b>{{ stat.count }}</b></div>
             </div>
           </div>
+        </div>
+        <div v-if="gradeStats.length === 0" class="empty-state">
+          <p>暂无统计数据</p>
         </div>
       </el-tab-pane>
     </el-tabs>
@@ -105,80 +117,54 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useUserStore } from '@/store/user'
-import { grades as _grades, semesters, users, departments, courses } from '@/mock/data'
+import { useOaStore } from '@/store/oa'
+import { users, departments, semesters as _semesters } from '@/mock/data'
 import { ElMessage } from 'element-plus'
 
 const userStore = useUserStore()
+const oaStore = useOaStore()
 const activeTab = ref('query')
 const search = reactive({ semester: '2024-2025学年第一学期', examType: '', courseName: '' })
 const entryForm = reactive({ semester: '2024-2025学年第二学期', courseName: '' })
+const statsForm = reactive({ semester: '2024-2025学年第一学期', examType: '期中考试' })
 const showEntryTable = ref(false)
 
-// 可编辑的深拷贝
-const grades = ref(_grades.map(g => ({ ...g })))
-
-// ======== 权限控制核心逻辑 ========
-// 教研组 → 学科 映射
-const deptSubjectMap = {
-  '语文教研组': '语文',
-  '数学教研组': '数学',
-  '英语教研组': '英语',
-  '物理教研组': '物理',
-  '化学教研组': '化学',
-  '生物教研组': '生物',
-  '历史教研组': '历史',
-  '信息中心': '信息技术'
-}
+// 学期列表来自store
+const semesters = computed(() => oaStore.semestersList)
 
 const isTeacher = computed(() => userStore.currentUser?.roleName === '教师')
 
-// 当前教师的学科（通过教研组映射）
+// 当前教师的学科
 const mySubject = computed(() => {
   if (!isTeacher.value) return '全部'
   const userDept = userStore.currentUser?.deptName || ''
-  return deptSubjectMap[userDept] || '未分配'
+  return oaStore.deptSubjectMap[userDept] || '未分配'
 })
 
-// 当前教师负责的班级（从课表/schedules推断，这里简化为根据用户所属部门匹配）
+// 当前教师负责的班级
 const myClasses = computed(() => {
-  // 教师能看到自己教的班级 - 简化处理：
-  // 如果是语文老师 → 能看到有语文课的班级（高一1班、高一2班、高二1班等）
-  const allClasses = departments.filter(d => d.type === '班级')
-  if (!isTeacher.value) return allClasses
-
-  // 根据学科过滤可见班级（模拟数据）
-  const subjectClassMap = {
-    '语文': [7, 8, 10],     // 高一1班、高一2班、高二1班
-    '数学': [7, 8, 10],
-    '英语': [7, 8, 10],
-    '物理': [7, 10],
-    '化学': [7, 10],
-    '生物': [7],
-    '历史': [7, 10]
-  }
-  const clsIds = subjectClassMap[mySubject.value] || []
-  return allClasses.filter(c => clsIds.includes(c.id))
+  if (!isTeacher.value) return departments.filter(d => d.type === '班级')
+  return oaStore.getTeacherClasses(userStore.currentUser?.deptName)
 })
 
-// 教师能看到的课程列表（只有自己学科）
+// 可查询的课程列表
 const availableCourses = computed(() => {
+  const visibleGrades = oaStore.getVisibleGrades(userStore.currentUser)
+  const courseSet = new Set(visibleGrades.map(g => g.courseName))
   if (isTeacher.value) {
-    // 只返回自己学科的选项
-    return [...new Set(grades.value.filter(g => g.courseName === mySubject.value).map(g => g.courseName))]
+    return [...courseSet].filter(c => c === mySubject.value)
   }
-  return [...new Set(grades.value.map(g => g.courseName))]
+  return [...courseSet]
 })
 
-// 录入页面的课程下拉（教师锁定为自己的学科）
+// 录入页面的课程下拉
 const availableEntryCourses = computed(() => {
-  if (isTeacher.value) {
-    return [mySubject.value] // 教师只能选自己的学科
-  }
-  return [...new Set(grades.value.map(g => g.courseName))]
+  if (isTeacher.value) return [mySubject.value]
+  const courseSet = new Set(oaStore.grades.map(g => g.courseName))
+  return [...courseSet]
 })
 
 onMounted(() => {
-  // 教师登录时自动设置默认课程为自己学科
   if (isTeacher.value) {
     entryForm.courseName = mySubject.value
     search.courseName = ''
@@ -187,91 +173,44 @@ onMounted(() => {
 
 // ======== 成绩查询（带权限过滤） ========
 const filteredGrades = computed(() => {
-  let result = grades.value.filter(g => {
-    // 学生只能看已发布的 + 自己的成绩
-    if (userStore.currentUser?.roleName === '学生') {
-      if (g.status !== '已发布') return false
-      if (g.studentId !== userStore.currentUser?.id) return false
-    }
-
-    // 教师：只能看自己学科的成绩
-    if (isTeacher.value) {
-      if (g.courseName !== mySubject.value) return false
-    }
-
-    // 搜索条件
-    if (search.semester && g.semester !== search.semester) return false
-    if (search.examType && g.examType !== search.examType) return false
-    if (search.courseName && g.courseName !== search.courseName) return false
-    return true
-  })
+  let result = oaStore.getVisibleGrades(userStore.currentUser)
+  if (search.semester) result = result.filter(g => g.semester === search.semester)
+  if (search.examType) result = result.filter(g => g.examType === search.examType)
+  if (search.courseName) result = result.filter(g => g.courseName === search.courseName)
   return result
 })
 
-// ======== 成绩录入（带权限过滤） ========
+// ======== 成绩录入（带权限过滤 + 班级名填充） ========
 const entryStudents = computed(() => {
-  let result = grades.value.filter(g =>
-    g.semester === entryForm.semester &&
-    g.courseName === entryForm.courseName
+  if (!showEntryTable.value) return []
+  let result = oaStore.getVisibleGrades(userStore.currentUser).filter(g =>
+    g.semester === entryForm.semester && g.courseName === entryForm.courseName
   )
-
-  // 教师额外限制：只显示自己负责的班级的学生
-  if (isTeacher.value) {
-    const allowedClassIds = myClasses.value.map(c => c.id)
-    result = result.filter(g => allowedClassIds.includes(g.studentId ?
-      users.find(u => u.id === g.studentId)?.deptId || 0 :
-      0))
-    // 通过学生ID查班级
-    result = result.filter(g => {
-      const student = users.find(u => u.id === g.studentId)
-      return student && allowedClassIds.includes(student.deptId)
-    })
-  }
-
-  return result
+  // 填充班级名
+  return result.map(g => {
+    const student = users.find(u => u.id === g.studentId)
+    const cls = student ? departments.find(d => d.id === student.deptId) : null
+    return { ...g, className: cls?.name || '未知班级' }
+  })
 })
+
+// 成绩修改时保存到store
+function onScoreChange(row) {
+  oaStore.updateGrade(row.id, { score: row.score })
+}
 
 function doBatchPublish() {
-  const targets = grades.value.filter(g =>
-    g.semester === entryForm.semester &&
-    g.courseName === entryForm.courseName &&
-    g.status === '待发布'
-  )
-  // 教师只能发布自己学科的
-  if (isTeacher.value) {
-    const filteredTargets = targets.filter(t => t.courseName === mySubject.value)
-    filteredTargets.forEach(g => g.status = '已发布')
-    ElMessage.success(`已发布 ${filteredTargets.length} 条${mySubject.value}成绩`)
+  const count = oaStore.publishGrades(entryForm.semester, entryForm.courseName, userStore.currentUser)
+  if (count > 0) {
+    ElMessage.success(`已发布 ${count} 条${isTeacher.value ? mySubject.value : ''}成绩`)
   } else {
-    targets.forEach(g => g.status = '已发布')
-    ElMessage.success(`已发布 ${targets.length} 条成绩`)
+    ElMessage.info('没有待发布的成绩')
   }
 }
 
-// ======== 统计（按权限） ========
+// ======== 统计（按权限 + 班级分组） ========
 const gradeStats = computed(() => {
-  let published = grades.value.filter(g =>
-    g.status === '已发布' &&
-    g.semester === '2024-2025学年第一学期' &&
-    g.examType === '期中考试'
-  )
-  // 教师只统计自己的学科
-  if (isTeacher.value) {
-    published = published.filter(g => g.courseName === mySubject.value)
-  }
-
-  const grouped = {}
-  published.forEach(g => {
-    if (!grouped[g.courseName]) grouped[g.courseName] = []
-    grouped[g.courseName].push(g.score)
-  })
-  return Object.entries(grouped).map(([courseName, scores]) => ({
-    courseName,
-    avg: (scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1),
-    max: Math.max(...scores),
-    min: Math.min(...scores),
-    passRate: ((scores.filter(s => s >= 60).length / scores.length) * 100).toFixed(1)
-  }))
+  return oaStore.getGradeStats(statsForm.semester, statsForm.examType, userStore.currentUser)
 })
 </script>
 

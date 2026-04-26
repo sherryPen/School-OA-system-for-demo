@@ -33,7 +33,7 @@
         <el-form-item v-if="form.type" label="审批流程">
           <div style="padding:12px; background:#f8fafc; border-radius:10px; border:1px solid #e8ecf1;">
             <el-steps :active="0" simple>
-              <el-step v-for="(node, idx) in currentNodes" :key="idx" :title="node" />
+              <el-step v-for="(node, idx) in currentNodes" :key="idx" :title="node" :description="getNodeDesc(node)" />
             </el-steps>
           </div>
         </el-form-item>
@@ -50,11 +50,13 @@
 import { reactive, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/store/user'
-import { workflowTemplates, meetingRooms, workflowRecords } from '@/mock/data'
+import { useOaStore } from '@/store/oa'
+import { workflowTemplates, meetingRooms, users } from '@/mock/data'
 import { ElMessage } from 'element-plus'
 
 const router = useRouter()
 const userStore = useUserStore()
+const oaStore = useOaStore()
 const form = reactive({ type: '', reason: '', startDate: '', endDate: '', amount: 0, meetingRoom: '', meetingDate: '' })
 
 const currentNodes = computed(() => {
@@ -62,16 +64,53 @@ const currentNodes = computed(() => {
   return t ? t.nodes : []
 })
 
+// 显示审批节点的负责人信息（具体人名）
+function getNodeDesc(node) {
+  const applicantDept = userStore.currentUser?.deptName
+  // 根据审批节点类型和申请人部门，映射到具体审批人
+  const nodePersonMap = {
+    '直属领导审批': getDeptLeader(applicantDept),
+    '部门领导审批': getDeptLeader(applicantDept),
+    '财务处审批': '黄磊（财务处）',
+    '校长审批': '李明（校长）',
+    '校办审批': '张建国（校办）',
+    '教务处审批': '陈华（教务处）',
+    '总务处审批': '林峰（总务处）',
+    '人事处备案': '杨雪（人事处）',
+    '自动审批（冲突检测）': '系统自动'
+  }
+  return nodePersonMap[node] || ''
+}
+
+// 根据部门获取部门负责人
+function getDeptLeader(dept) {
+  const leaderMap = {
+    '语文教研组': '刘伟（教研组长）',
+    '数学教研组': '张丽（教研组长）',
+    '英语教研组': '王强（教研组长）',
+    '物理教研组': '赵敏（教研组长）',
+    '化学教研组': '孙涛（教研组长）',
+    '生物教研组': '周婷（教研组长）',
+    '历史教研组': '吴杰（教研组长）',
+    '教务处': '陈华（教务处主任）',
+    '财务处': '黄磊（财务处主任）',
+    '总务处': '林峰（总务处主任）',
+    '人事处': '杨雪（人事处主任）',
+    '校领导办公室': '张建国（校办主任）'
+  }
+  return leaderMap[dept] || '部门负责人'
+}
+
 function onTypeChange() {}
 
 function doSubmit() {
   if (!form.type) return ElMessage.warning('请选择申请类型')
   if (!form.reason) return ElMessage.warning('请填写申请原因')
-  
+
   const template = workflowTemplates.find(t => t.name === form.type)
-  const newId = Math.max(...workflowRecords.map(r => r.id)) + 1
+  const newId = Math.max(...oaStore.workflowRecords.map(r => r.id), 0) + 1
   const now = new Date().toISOString().slice(0, 10)
-  
+
   const newRecord = {
     id: newId,
     templateId: template?.id,
@@ -81,10 +120,11 @@ function doSubmit() {
     applyTime: now,
     status: '审批中',
     currentNode: template?.nodes?.[0] || '',
+    currentNodeDisplay: template?.nodes?.[0] ? `${template.nodes[0]}` : '',
     reason: form.reason,
     approveHistory: []
   }
-  
+
   if (form.type === '请假申请' || form.type === '出差申请') {
     newRecord.startDate = form.startDate
     newRecord.endDate = form.endDate
@@ -95,8 +135,20 @@ function doSubmit() {
   if (form.type === '会议室预约') {
     newRecord.meetingRoom = form.meetingRoom
   }
-  
-  workflowRecords.push(newRecord)
+
+  // 使用store添加，自动持久化+通知
+  oaStore.addWorkflowRecord(newRecord)
+
+  // 通知相关审批人
+  const firstNode = template?.nodes?.[0] || ''
+  if (firstNode.includes('教务处')) {
+    oaStore.addNotification({ type: 'approval', title: '待审批', desc: `${userStore.currentUser?.name}提交了${form.type}`, path: `/workflow/detail/${newId}`, userIds: ['dept:教务处'] })
+  } else if (firstNode.includes('校办') || firstNode.includes('校长')) {
+    oaStore.addNotification({ type: 'approval', title: '待审批', desc: `${userStore.currentUser?.name}提交了${form.type}`, path: `/workflow/detail/${newId}`, userIds: ['admin'] })
+  } else {
+    oaStore.addNotification({ type: 'approval', title: '待审批', desc: `${userStore.currentUser?.name}提交了${form.type}`, path: `/workflow/detail/${newId}`, userIds: null })
+  }
+
   ElMessage.success('申请已提交')
   router.push('/workflow')
 }

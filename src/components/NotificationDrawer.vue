@@ -15,11 +15,11 @@
       <div class="drawer-panel" v-show="isExpanded">
         <div class="drawer-header">
           <h3>🔔 消息通知</h3>
-          <el-button text type="primary" size="small" @click="markAllRead">全部已读</el-button>
+          <el-button text type="primary" size="small" @click="doMarkAllRead">全部已读</el-button>
         </div>
-        <div class="drawer-list" v-if="notifications.length > 0">
+        <div class="drawer-list" v-if="visibleNotifications.length > 0">
           <transition-group name="notif-item">
-            <div v-for="item in notifications" :key="item.id"
+            <div v-for="item in visibleNotifications" :key="item.id"
                  class="notification-item"
                  :class="{ unread: !item.read, [`type-${item.type}`]: true }"
                  @click="handleClick(item)">
@@ -41,7 +41,7 @@
         </div>
 
         <div class="drawer-footer">
-          <span>{{ notifications.length }} 条消息 · {{ unreadCount }} 未读</span>
+          <span>{{ visibleNotifications.length }} 条消息 · {{ unreadCount }} 未读</span>
         </div>
       </div>
     </transition>
@@ -52,13 +52,14 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/store/user'
+import { useOaStore } from '@/store/oa'
 import { ElMessage } from 'element-plus'
 
 const router = useRouter()
 const userStore = useUserStore()
+const oaStore = useOaStore()
 const isExpanded = ref(false)
 
-const STORAGE_KEY_PREFIX = 'oa_notif_'
 const iconMap = {
   approval: 'DocumentChecked',
   announcement: 'Bell',
@@ -66,95 +67,45 @@ const iconMap = {
   system: 'Setting'
 }
 
-// 生成个性化通知（与layout保持一致）
-function generateNotifications() {
+// 从store获取可见通知
+const visibleNotifications = computed(() => {
   const userId = userStore.currentUser?.id
   const roleName = userStore.currentUser?.roleName
   const deptName = userStore.currentUser?.deptName
+  return oaStore.getVisibleNotifications(userId, roleName, deptName)
+})
 
-  const baseNotifs = [
-    { id: `d-${userId}-1`, type: 'announcement', title: '新公告', desc: '关于劳动节放假安排的通知已发布', time: '1小时前', read: false, path: '/announcement/detail/18' },
-    { id: `d-${userId}-2`, type: 'meeting', title: '会议提醒', desc: '高考工作协调会将于明天09:00召开', time: '2小时前', read: false, path: '/meeting' }
-  ]
-
-  const extraNotifs = []
-
-  if (['系统管理员', '学校领导'].includes(roleName)) {
-    extraNotifs.push(
-      { id: `d-${userId}-3`, type: 'approval', title: '待审批', desc: '赵敏提交了请假申请，等待您审批', time: '10分钟前', read: false, path: '/workflow/detail/6' },
-      { id: `d-${userId}-4`, type: 'approval', title: '待审批', desc: '孙涛提交了报销申请，等待您审批', time: '30分钟前', read: false, path: '/workflow/detail/26' }
-    )
-  }
-
-  if (deptName === '教务处') {
-    extraNotifs.push(
-      { id: `d-${userId}-5`, type: 'system', title: '课表待审核', desc: '高一(3)班课表已提交，请审核后发布', time: '30分钟前', read: false, path: '/course' }
-    )
-  }
-
-  if (roleName === '教师') {
-    extraNotifs.push(
-      { id: `d-${userId}-6`, type: 'announcement', title: '教学通知', desc: '期中考试考务会议将于下周召开', time: '昨天', read: false, path: '/announcement/detail/17' }
-    )
-  }
-
-  if (roleName === '学生') {
-    extraNotifs.push(
-      { id: `d-${userId}-7`, type: 'announcement', title: '成绩发布', desc: '期中考试成绩已发布，可前往查看', time: '今天', read: false, path: '/grade' }
-    )
-  }
-
-  const all = [...baseNotifs, ...extraNotifs]
-
-  // 从localStorage恢复已读状态
-  const savedState = loadReadState(userId)
-  all.forEach(n => { n.read = savedState[n.id] || n.read || false })
-
-  return all
-}
-
-const notifications = ref([])
-onMounted(() => { notifications.value = generateNotifications() })
-watch(() => userStore.currentUser?.id, () => { notifications.value = generateNotifications() }, { immediate: true })
-
-const unreadCount = computed(() => notifications.value.filter(n => !n.read).length)
+const unreadCount = computed(() => {
+  const userId = userStore.currentUser?.id
+  const roleName = userStore.currentUser?.roleName
+  const deptName = userStore.currentUser?.deptName
+  return oaStore.getUnreadCount(userId, roleName, deptName)
+})
 
 function toggleDrawer() {
   isExpanded.value = !isExpanded.value
 }
 
 function handleClick(item) {
-  markAsRead(item)
+  oaStore.markNotificationRead(item.id)
   isExpanded.value = false
   if (item.path) router.push(item.path)
   else ElMessage.info(item.desc)
 }
 
-function markAllRead() {
-  const userId = userStore.currentUser?.id
-  notifications.value.forEach(n => { n.read = true })
-  saveReadState(userId)
+function doMarkAllRead() {
+  oaStore.markAllNotificationsRead()
   ElMessage.success('已全部标记为已读')
 }
 
-function markAsRead(item) {
-  item.read = true
-  saveReadState(userStore.currentUser?.id)
-}
-
-function saveReadState(userId) {
-  try {
-    const state = {}
-    notifications.value.forEach(n => { state[n.id] = n.read })
-    localStorage.setItem(`${STORAGE_KEY_PREFIX}${userId}`, JSON.stringify(state))
-  } catch(e){}
-}
-function loadReadState(userId) {
-  try {
-    const raw = localStorage.getItem(`${STORAGE_KEY_PREFIX}${userId}`)
-    return raw ? JSON.parse(raw) : {}
-  } catch(e){ return {} }
-}
+// 初始化默认通知
+watch(() => userStore.currentUser?.id, (newId) => {
+  if (newId) {
+    const roleName = userStore.currentUser?.roleName
+    const deptName = userStore.currentUser?.deptName
+    oaStore.initDefaultNotifications(newId, roleName, deptName)
+  }
+}, { immediate: true })
 </script>
 
 <style scoped>

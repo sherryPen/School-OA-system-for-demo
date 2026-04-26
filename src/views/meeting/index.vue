@@ -33,7 +33,7 @@
         </el-table>
       </el-tab-pane>
       <el-tab-pane label="会议室管理" name="rooms">
-        <el-table :data="meetingRooms" stripe>
+        <el-table :data="oaStore.meetingRooms" stripe>
           <el-table-column type="index" label="#" width="50" />
           <el-table-column prop="name" label="会议室名称" width="140" />
           <el-table-column prop="location" label="位置" width="140" />
@@ -68,7 +68,7 @@
         <el-form-item label="会议主题" required><el-input v-model="addForm.title" placeholder="请输入会议主题" /></el-form-item>
         <el-form-item label="会议室" required>
           <el-select v-model="addForm.roomId" style="width:100%;" placeholder="选择会议室" @change="onRoomSelect">
-            <el-option v-for="r in meetingRooms" :key="r.id" :label="`${r.name}（${r.location}，${r.capacity}人）`" :value="r.id" />
+            <el-option v-for="r in oaStore.meetingRooms" :key="r.id" :label="`${r.name}（${r.location}，${r.capacity}人）`" :value="r.id" />
           </el-select>
         </el-form-item>
         <el-form-item label="开始时间" required>
@@ -91,17 +91,23 @@
 <script setup>
 import { ref, reactive, computed } from 'vue'
 import { useUserStore } from '@/store/user'
-import { meetings as _meetings, meetingRooms } from '@/mock/data'
+import { useOaStore } from '@/store/oa'
 import { ElMessage } from 'element-plus'
 
 const userStore = useUserStore()
+const oaStore = useOaStore()
 const activeTab = ref('list')
 const search = reactive({ keyword: '', status: '' })
 const detailVisible = ref(false)
 const addVisible = ref(false)
 const currentMeeting = ref(null)
 
-const meetingList = ref(_meetings.map(m => ({ ...m })))
+// 从store获取可见会议
+const visibleMeetings = computed(() => {
+  const roleName = userStore.currentUser?.roleName
+  const userName = userStore.currentUser?.name
+  return oaStore.getVisibleMeetings(roleName, userName)
+})
 
 const addForm = reactive({
   title: '', roomId: null, roomName: '', startDateTime: '', endDateTime: '',
@@ -109,7 +115,7 @@ const addForm = reactive({
 })
 
 const filteredMeetings = computed(() => {
-  return meetingList.value.filter(m => {
+  return visibleMeetings.value.filter(m => {
     if (search.keyword && !m.title.includes(search.keyword)) return false
     if (search.status && m.status !== search.status) return false
     return true
@@ -127,7 +133,7 @@ function openAddMeeting() {
 }
 
 function onRoomSelect(roomId) {
-  const room = meetingRooms.find(r => r.id === roomId)
+  const room = oaStore.meetingRooms.find(r => r.id === roomId)
   if (room) addForm.roomName = room.name
 }
 
@@ -137,8 +143,8 @@ function doAddMeeting() {
   if (!addForm.startDateTime) return ElMessage.warning('请选择开始时间')
   if (!addForm.endDateTime) return ElMessage.warning('请选择结束时间')
   
-  const newId = Math.max(...meetingList.value.map(m => m.id)) + 1
-  meetingList.value.unshift({
+  const newId = Math.max(...oaStore.meetingList.map(m => m.id), 0) + 1
+  oaStore.addMeeting({
     id: newId,
     title: addForm.title,
     organizer: userStore.currentUser?.name,
@@ -153,6 +159,16 @@ function doAddMeeting() {
     status: '待召开',
     minutes: ''
   })
+
+  // 同时添加通知
+  oaStore.addNotification({
+    type: 'meeting',
+    title: '新会议通知',
+    desc: `${addForm.title} - ${addForm.startDateTime}`,
+    path: '/meeting',
+    userIds: null
+  })
+
   ElMessage.success('会议已创建')
   addVisible.value = false
 }

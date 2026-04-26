@@ -50,7 +50,7 @@
         </el-table>
       </el-tab-pane>
 
-      <!-- 全部记录 -->
+      <!-- 全部记录（权限过滤） -->
       <el-tab-pane label="全部记录" name="all">
         <el-table :data="allList" stripe @row-click="row => $router.push(`/workflow/detail/${row.id}`)" class="animate-fadeInUp">
           <el-table-column type="index" label="#" width="50" />
@@ -71,7 +71,7 @@
         </el-table>
       </el-tab-pane>
 
-      <!-- 流程进度（新增） -->
+      <!-- 流程进度 -->
       <el-tab-pane label="流程进度" name="progress">
         <div v-if="myApplyList.length > 0" style="display:flex; flex-direction:column; gap:20px;">
           <div v-for="record in myApplyList" :key="record.id"
@@ -88,7 +88,6 @@
 
             <!-- 进度时间线 -->
             <el-timeline>
-              <!-- 提交节点（始终存在） -->
               <el-timeline-item timestamp="提交申请" placement="top" :type="'primary'" :hollow="false">
                 <div class="timeline-content">
                   <strong>{{ record.type }}</strong>
@@ -96,7 +95,6 @@
                 </div>
               </el-timeline-item>
 
-              <!-- 各审批节点 -->
               <el-timeline-item
                 v-for="(node, idx) in getTemplateNodes(record)"
                 :key="idx"
@@ -111,13 +109,13 @@
                     {{ getHandlerInfo(record, node) }}
                   </div>
                   <div style="font-size:12px; color:#94a3b8;" v-if="isNodePending(record, node)">
-                    等待中...
+                    等待审批：{{ getPendingApprover(node, record) }}
                   </div>
                 </div>
               </el-timeline-item>
 
-              <!-- 最终结果节点 -->
-              <el-timestamp v-if="record.status !== '审批中'"
+              <!-- 最终结果 -->
+              <el-timeline-item v-if="record.status !== '审批中'"
                            :timestamp="record.status === '已通过' ? '✅ 已通过' : '❌ 已驳回'"
                            :placement="'top'"
                            :type="record.status === '已通过' ? 'success' : 'danger'"
@@ -129,7 +127,7 @@
                     · {{ getLastHistory(record)?.comment || '' }}
                   </div>
                 </div>
-              </el-timestamp>
+              </el-timeline-item>
             </el-timeline>
           </div>
         </div>
@@ -148,75 +146,54 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { useUserStore } from '@/store/user'
-import { workflowRecords as _records, workflowTemplates, users } from '@/mock/data'
+import { useOaStore } from '@/store/oa'
+import { workflowTemplates, users } from '@/mock/data'
 import { ElMessage } from 'element-plus'
 
 const userStore = useUserStore()
+const oaStore = useOaStore()
 const activeTab = ref('pending')
 
-// 深拷贝使其可编辑
-const records = ref(_records.map(r => ({
-  ...r,
-  approveHistory: r.approveHistory ? r.approveHistory.map(h => ({ ...h })) : []
-})))
+const userId = computed(() => userStore.currentUser?.id)
+const userName = computed(() => userStore.currentUser?.name)
+const roleName = computed(() => userStore.currentUser?.roleName)
+const deptName = computed(() => userStore.currentUser?.deptName)
 
-// 部门映射：用于在审批节点显示部门+人名
+// 部门映射
 const deptMap = {
-  '李明': '校领导办公室',
-  '张建国': '校领导办公室',
-  '陈华': '教务处',
-  '黄磊': '财务处',
-  '林峰': '总务处',
-  '杨雪': '人事处',
-  '刘伟': '语文教研组',
-  '张丽': '数学教研组',
-  '王强': '英语教研组',
-  '赵敏': '物理教研组',
-  '孙涛': '化学教研组',
-  '周婷': '生物教研组',
-  '吴杰': '历史教研组',
-  '系统': '信息中心'
+  '李明': '校领导办公室', '张建国': '校领导办公室',
+  '陈华': '教务处', '黄磊': '财务处', '林峰': '总务处',
+  '杨雪': '人事处', '刘伟': '语文教研组', '张丽': '数学教研组',
+  '王强': '英语教研组', '赵敏': '物理教研组', '孙涛': '化学教研组',
+  '周婷': '生物教研组', '吴杰': '历史教研组', '系统': '信息中心'
 }
 
-// ======== 待办列表（只显示需要当前用户审批的） ========
-const myPendingList = computed(() => {
-  const userId = userStore.currentUser?.id
-  const userName = userStore.currentUser?.name
-  const roleName = userStore.currentUser?.roleName
-
-  return records.value.filter(r => {
-    if (r.status !== '审批中') return false
-    // 根据当前节点的负责人过滤
-    // 系统管理员和学校领导可以看到所有待办
-    if (['系统管理员', '学校领导'].includes(roleName)) return true
-    // 行政人员：看自己部门的审批任务
-    if (roleName === '行政人员') {
-      const myDept = userStore.currentUser?.deptName
-      // 当前节点是否属于该用户的部门
-      const currentNode = r.currentNode || ''
-      if (currentNode.includes('教务处') && myDept === '教务处') return true
-      if (currentNode.includes('财务处') && myDept === '财务处') return true
-      if (currentNode.includes('总务处') && myDept === '总务处') return true
-      if (currentNode.includes('人事处') && myDept === '人事处') return true
-      if (currentNode.includes('校办') && myDept === '校领导办公室') return true
-      // 教务处可以审批调课申请
-      if (r.type === '调课申请' && myDept === '教务处') return true
-    }
-    // 教师：只能看到与自己相关的审批（如自己是直属领导的）
-    // 简化处理：检查审批历史中是否有自己的记录或是否是申请人的直属上级
-    const applicant = users.find(u => u.id === r.applicantId)
-    if (applicant && applicant.deptId === userStore.currentUser?.deptId && roleName === '教师') {
-      // 同教研组的教师可以看到彼此的请假等申请
-      if (r.type === '请假申请') return true
-    }
-    return false
+// ======== 使用store的权限过滤方法 ========
+function sortRecords(list) {
+  return [...list].sort((a, b) => {
+    // 审批中优先
+    if (a.status === '审批中' && b.status !== '审批中') return -1
+    if (a.status !== '审批中' && b.status === '审批中') return 1
+    // 其余按时间倒序
+    return b.applyTime.localeCompare(a.applyTime)
   })
-})
+}
+
+const myPendingList = computed(() =>
+  oaStore.getMyPendingRecords(userId.value, roleName.value, deptName.value)
+)
 
 const myApplyList = computed(() =>
-  records.value.filter(r => r.applicantId === userStore.currentUser?.id)
+  sortRecords(
+    oaStore.getMyWorkflowRecords(userId.value, roleName.value, deptName.value)
+      .filter(r => r.applicantId === userId.value)
+  )
 )
-const allList = computed(() => records.value)
+
+// 全部记录也做权限过滤 + 审批中置顶
+const allList = computed(() =>
+  sortRecords(oaStore.getMyWorkflowRecords(userId.value, roleName.value, deptName.value))
+)
 
 // ======== 辅助函数 ========
 function statusType(status) {
@@ -228,11 +205,11 @@ function statusType(status) {
 function calcProgress(record) {
   const tpl = workflowTemplates.find(t => t.name === record.type)
   if (!tpl) return record.status !== '审批中' ? 100 : 0
-  const totalNodes = tpl.nodes.length + 1 // +1 for submit
+  const totalNodes = tpl.nodes.length + 1
   const doneCount = record.approveHistory ? record.approveHistory.length : 0
   if (record.status === '已驳回') return Math.round((doneCount / totalNodes) * 90)
   if (record.status === '已通过') return 100
-  return Math.round((doneCount / totalNodes) * 80) // 审批中进行到80%
+  return Math.round((doneCount / totalNodes) * 80)
 }
 
 function progressColor(record) {
@@ -241,69 +218,67 @@ function progressColor(record) {
   return '#4a6cf7'
 }
 
-// 获取模板中的所有节点
 function getTemplateNodes(record) {
   const tpl = workflowTemplates.find(t => t.name === record.type)
   return tpl ? tpl.nodes : []
 }
 
-// 节点标签显示：包含部门和负责人
 function getNodeLabel(node) {
-  // 从节点名称提取部门信息
-  const nodeDeptMap = {
-    '直属领导审批': '直属领导（部门负责人）',
-    '财务处审批': '财务处（财务审核）',
-    '部门领导审批': '部门领导（部门负责人）',
-    '校长审批': '校长室（校长审批）',
-    '校办审批': '校办（行政审核）',
-    '教务处审批': '教务处（教学管理）',
-    '总务处审批': '总务处（后勤保障）',
-    '人事处备案': '人事处（档案备案）',
+  // 根据当前申请人部门动态计算具体审批人
+  const applicantDept = userStore.currentUser?.deptName
+  const nodeLabelMap = {
+    '直属领导审批': `直属领导（${getDeptLeader(applicantDept)}）`,
+    '财务处审批': '财务处（黄磊）',
+    '部门领导审批': `部门领导（${getDeptLeader(applicantDept)}）`,
+    '校长审批': '校长室（李明）',
+    '校办审批': '校办（张建国）',
+    '教务处审批': '教务处（陈华）',
+    '总务处审批': '总务处（林峰）',
+    '人事处备案': '人事处（杨雪）',
     '自动审批（冲突检测）': '系统自动检测'
   }
-  return nodeDeptMap[node] || node
+  return nodeLabelMap[node] || node
 }
 
-// 获取节点类型（颜色）
+function getDeptLeader(dept) {
+  const leaderMap = {
+    '语文教研组': '刘伟', '数学教研组': '张丽', '英语教研组': '王强',
+    '物理教研组': '赵敏', '化学教研组': '孙涛', '生物教研组': '周婷',
+    '历史教研组': '吴杰', '教务处': '陈华', '财务处': '黄磊',
+    '总务处': '林峰', '人事处': '杨雪', '校领导办公室': '张建国'
+  }
+  return leaderMap[dept] || '部门负责人'
+}
+
 function getNodeType(record, node) {
   if (record.status === '已驳回') {
-    // 检查是否在这个节点被驳回
     const lastH = record.approveHistory[record.approveHistory.length - 1]
     if (lastH && lastH.node === node && lastH.result === '驳回') return 'danger'
   }
-  // 检查这个节点是否已经通过
   const passed = record.approveHistory?.find(h => h.node === node && h.result === '通过')
   if (passed) return 'success'
-
-  // 检查是否是当前节点
   if (record.currentNode === node || record.currentNode?.includes(node.replace('审批', '').replace('备案', ''))) return 'primary'
-
-  return 'info' // 未到达的节点
+  return 'info'
 }
 
 function isNodePending(record, node) {
   if (record.status !== '审批中') return false
-  // 没有被处理过且不是当前节点之前的节点
   const handled = record.approveHistory?.find(h => h.node === node)
   if (handled) return false
-  // 判断是否到了这个节点
   const tpl = workflowTemplates.find(t => t.name === record.type)
   if (!tpl) return false
   const nodeIdx = tpl.nodes.indexOf(node)
   if (nodeIdx < 0) return false
-  // 前面的节点都已通过？
   for (let i = 0; i < nodeIdx; i++) {
     const prevPassed = record.approveHistory?.find(h => h.node === tpl.nodes[i] && h.result === '通过')
-    if (!prevPassed) return false // 前面有没通过的
+    if (!prevPassed) return false
   }
-  // 是当前正在等待的节点
   return record.currentNode?.includes(node) || nodeIdx === record.approveHistory?.length
 }
 
 function isNodePassed(record, node) {
   return record.approveHistory?.find(h => h.node === node && h.result === '通过')
 }
-
 function isNodeRejected(record, node) {
   return record.approveHistory?.find(h => h.node === node && h.result === '驳回')
 }
@@ -312,7 +287,6 @@ function getHandlerInfo(record, node) {
   const h = record.approveHistory?.find(item => item.node === node)
   if (!h) return ''
   const handlerDept = deptMap[h.handler] || ''
-  // 格式：部门名（姓名）
   return `${h.time} · ${handlerDept}（${h.handler}）${h.comment ? '· ' + h.comment : ''}`
 }
 
@@ -321,53 +295,41 @@ function getApplicantDept(record) {
   return applicant?.deptName || ''
 }
 
+// 获取待审批节点的具体审批人
+function getPendingApprover(node, record) {
+  const applicant = users.find(u => u.id === record.applicantId)
+  const applicantDept = applicant?.deptName || ''
+  const nodePersonMap = {
+    '直属领导审批': getDeptLeader(applicantDept),
+    '部门领导审批': getDeptLeader(applicantDept),
+    '财务处审批': '黄磊（财务处）',
+    '校长审批': '李明（校长）',
+    '校办审批': '张建国（校办）',
+    '教务处审批': '陈华（教务处）',
+    '总务处审批': '林峰（总务处）',
+    '人事处备案': '杨雪（人事处）',
+    '自动审批（冲突检测）': '系统自动'
+  }
+  return nodePersonMap[node] || '审批人'
+}
+
 function getLastHistory(record) {
   if (!record.approveHistory || record.approveHistory.length === 0) return null
   return record.approveHistory[record.approveHistory.length - 1]
 }
 
-// ======== 审批操作 ========
+// ======== 审批操作（使用store统一处理） ========
 function doApprove(row, approve) {
-  const result = approve ? '已通过' : '已驳回'
-  const userName = userStore.currentUser?.name || '管理员'
-  const userDept = userStore.currentUser?.deptName || ''
-
-  // 更新当前节点到下一个
-  const tpl = workflowTemplates.find(t => t.name === row.type)
-  if (tpl) {
-    const currentIdx = tpl.nodes.findIndex(n => row.currentNode?.includes(n) || n.includes(row.currentNode || ''))
-    if (approve && currentIdx >= 0 && currentIdx < tpl.nodes.length - 1) {
-      row.currentNode = tpl.nodes[currentIdx + 1]
-      row.currentNodeDisplay = `${tpl.nodes[currentIdx + 1]}（${userDept}）`
-    } else {
-      row.currentNode = ''
-      row.currentNodeDisplay = ''
-      row.status = result
-    }
-  } else {
-    row.status = result
-    row.currentNode = ''
+  oaStore.approveWorkflow(row.id, approve, userName.value, deptName.value)
+  // 添加通知
+  if (approve) {
+    oaStore.addNotification({
+      type: 'approval', title: '审批通过',
+      desc: `${userName.value}通过了${row.applicant}的${row.type}`,
+      path: `/workflow/detail/${row.id}`,
+      userIds: [row.applicantId]
+    })
   }
-
-  const timeStr = new Date().toLocaleString('zh-CN', {
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit'
-  }).replace(/\//g, '-')
-
-  row.approveHistory.push({
-    node: row.currentNode || (approve ? '最终审批' : '审批节点'),
-    handler: userName,
-    time: timeStr,
-    result: approve ? '通过' : '驳回',
-    comment: approve ? '同意' : '不同意',
-    dept: userDept
-  })
-
-  // 同时更新currentNodeDisplay用于表格展示
-  if (row.status === '审批中' && row.currentNode) {
-    row.currentNodeDisplay = `${row.currentNode}（${userDept}）`
-  }
-
   ElMessage.success(approve ? `已通过${row.type}` : `已驳回${row.type}`)
 }
 </script>

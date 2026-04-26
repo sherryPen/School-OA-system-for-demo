@@ -11,6 +11,13 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    host: '0.0.0.0'
+    host: '0.0.0.0',
+    proxy: {
+      '/api/llm': {
+        target: 'https://open.bigmodel.cn',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/llm/, '/api/paas/v4')
+      }
+    }
   }
 })
