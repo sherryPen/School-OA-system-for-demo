@@ -3,12 +3,13 @@
  * 
  * 支持流式SSE返回，兼容OpenAI格式
  * API文档：https://open.bigmodel.cn/dev/api/normal-model/glm-4
+ * 
+ * 【安全】API Key 不再硬编码，由 Vercel Serverless Function 在服务端注入
+ * 前端统一请求 /api/llm/chat/completions，由服务端代理转发到智谱API
  */
 
-const API_URL = import.meta.env.DEV
-  ? '/api/llm/chat/completions'   // 开发环境走Vite代理，避免CORS
-  : 'https://open.bigmodel.cn/api/paas/v4/chat/completions'  // 生产环境直连
-const API_KEY = 'REMOVED_USE_ENV_VAR'
+// 所有环境统一走 /api/llm 代理路径（开发环境由 Vite proxy 转发，生产环境由 Vercel Function 处理）
+const API_URL = '/api/llm/chat/completions'
 const MODEL = 'glm-4-flash'
 
 /**
@@ -22,8 +23,7 @@ export async function chatStream(messages, onChunk, signal) {
   const response = await fetch(API_URL, {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${API_KEY}`
+      'Content-Type': 'application/json'
     },
     body: JSON.stringify({
       model: MODEL,
@@ -87,8 +87,7 @@ export async function chatOnce(messages) {
   const response = await fetch(API_URL, {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${API_KEY}`
+      'Content-Type': 'application/json'
     },
     body: JSON.stringify({
       model: MODEL,
